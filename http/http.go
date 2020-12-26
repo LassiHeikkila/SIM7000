@@ -1,8 +1,10 @@
 package http
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/LassiHeikkila/SIM7000/module"
@@ -84,14 +86,14 @@ func (c *HttpClient) Close() {
 	}
 }
 
-func (c *HttpClient) Get(url string) ([]byte, error) {
+func (c *HttpClient) Get(url string) (int, []byte, error) {
 	// set CID 1, honestly don't know what this means but SIMCOM documentation says to do it
 	output.Println("Setting CID")
 	if ok, _ := c.module.SendATCommand("AT+HTTPPARA=\"CID\",1", 2*time.Second, "OK"); ok {
 		output.Println("CID set to 1")
 	} else {
 		output.Println("Failed to set CID to 1")
-		return nil, errors.New("HTTP service configuration failed")
+		return 0, nil, errors.New("HTTP service configuration failed")
 	}
 
 	// set URL
@@ -100,17 +102,133 @@ func (c *HttpClient) Get(url string) ([]byte, error) {
 		output.Println("URL set to", url)
 	} else {
 		output.Println("Failed to set URL to", url)
-		return nil, errors.New("HTTP service configuration failed")
+		return 0, nil, errors.New("HTTP service configuration failed")
 	}
-	time.Sleep(2)
 	// execute GET
 	output.Println("Executing GET")
 	response, _ := c.module.SendATCommandReturnResponse("AT+HTTPACTION=0", 10*time.Second)
 	output.Println(string(response))
+	actionResponse, err := parseHTTPActionResponse(response)
+	if err != nil {
+		return 0, nil, err
+	}
 
-	// read
-	output.Println("Reading data")
-	data, _ := c.module.SendATCommandReturnResponse("AT+HTTPREAD", 5*time.Second)
+	var data []byte
+	if actionResponse.dataLength > 0 {
+		// read
+		output.Println("Reading data")
+		data, _ = c.module.SendATCommandReturnResponse("AT+HTTPREAD", 5*time.Second)
+	}
 
-	return data, nil
+	return actionResponse.responseCode, data, nil
+}
+
+// Post executes a HTTP Post, returning the HTTP status code and any response data or error
+func (c *HttpClient) Post(url string, b []byte, headerParams map[string]string) (int, []byte, error) {
+	// set CID 1, honestly don't know what this means but SIMCOM documentation says to do it
+	output.Println("Setting CID")
+	if ok, _ := c.module.SendATCommand("AT+HTTPPARA=\"CID\",1", 2*time.Second, "OK"); ok {
+		output.Println("CID set to 1")
+	} else {
+		output.Println("Failed to set CID to 1")
+		return 0, nil, errors.New("HTTP service configuration failed")
+	}
+
+	// set URL
+	output.Println("Setting URL")
+	if ok, _ := c.module.SendATCommand(fmt.Sprintf("AT+HTTPPARA=\"URL\",\"%s\"", url), 2*time.Second, "OK"); ok {
+		output.Println("URL set to", url)
+	} else {
+		output.Println("Failed to set URL to", url)
+		return 0, nil, errors.New("HTTP service configuration failed")
+	}
+
+	if headerParams != nil {
+		headerInfo := ""
+		for key, value := range headerParams {
+			headerInfo += fmt.Sprintf("%s: %s\n", key, value)
+		}
+		// set header params
+		if ok, _ := c.module.SendATCommand(fmt.Sprintf("AT+HTTPPARA=\"USERDATA\",\"%s\"", headerInfo), 2*time.Second, "OK"); ok {
+			output.Println("HEADER set to", headerInfo)
+		} else {
+			output.Println("Failed to set header")
+			return 0, nil, errors.New("Failed to set header")
+		}
+	}
+
+	output.Println("Sending data to module")
+	if downloadReady, _ := c.module.SendATCommand(fmt.Sprintf("AT+HTTPDATA=%d,%d", len(b), 3000), time.Second, "DOWNLOAD"); downloadReady {
+		n, err := c.module.Write(b)
+		if err != nil {
+			output.Println("Error writing data to module:", err)
+			return 0, nil, err
+		}
+		if n != len(b) {
+			output.Printf("Only wrote %d of %d bytes\n", n, len(b))
+			return 0, nil, errors.New("Short write")
+		}
+		resp, _ := c.module.ReadATResponse(time.Second)
+		if !bytes.Contains(resp, []byte("OK")) {
+			output.Println("Module did not OK written data.")
+			return 0, nil, errors.New("Write not OK")
+		}
+	}
+
+	// execute GET
+	output.Println("Executing POST")
+	response, _ := c.module.SendATCommandReturnResponse("AT+HTTPACTION=1", 10*time.Second)
+	output.Println(string(response))
+	actionResponse, err := parseHTTPActionResponse(response)
+	if err != nil {
+		output.Println("Error parsing HTTP action response:", err)
+		return 0, nil, err
+	}
+
+	var data []byte
+	if actionResponse.dataLength > 0 {
+		// read
+		output.Println("Reading data")
+		data, _ = c.module.SendATCommandReturnResponse("AT+HTTPREAD", 5*time.Second)
+	}
+
+	return actionResponse.responseCode, data, nil
+}
+
+type actionResponse struct {
+	action       int
+	responseCode int
+	dataLength   int
+}
+
+func parseHTTPActionResponse(b []byte) (actionResponse, error) {
+	lines := bytes.Split(b, []byte("\n"))
+	for _, line := range lines {
+		line = bytes.TrimSpace(line)
+		if bytes.HasPrefix(line, []byte("+HTTPACTION:")) {
+			line = bytes.TrimPrefix(line, []byte("+HTTPACTION:"))
+			parts := bytes.Split(line, []byte(","))
+			if len(parts) == 3 {
+				act, err := strconv.ParseInt(string(bytes.TrimSpace(parts[0])), 10, 64)
+				if err != nil {
+					return actionResponse{}, err
+				}
+				resp, err := strconv.ParseInt(string(bytes.TrimSpace(parts[1])), 10, 64)
+				if err != nil {
+					return actionResponse{}, err
+				}
+				dataLen, err := strconv.ParseInt(string(bytes.TrimSpace(parts[2])), 10, 64)
+				if err != nil {
+					return actionResponse{}, err
+				}
+				return actionResponse{
+					action:       int(act),
+					responseCode: int(resp),
+					dataLength:   int(dataLen),
+				}, nil
+
+			}
+		}
+	}
+	return actionResponse{}, errors.New("HTTPACTION response not found")
 }

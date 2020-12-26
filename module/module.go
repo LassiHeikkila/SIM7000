@@ -10,6 +10,7 @@ type Module interface {
 	SendATCommandNoResponse(cmd string) error
 	SendATCommandTwoResponses(cmd string, timeout time.Duration, expectedReply1 string, expectedReply2 string) (bool, bool, error)
 	SendATCommandReturnResponse(cmd string, timeout time.Duration) ([]byte, error)
+	ReadATResponse(timeout time.Duration) ([]byte, error)
 	Write(buffer []byte) (int, error)
 	Read(buffer []byte) (int, error)
 

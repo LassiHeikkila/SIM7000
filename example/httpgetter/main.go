@@ -48,7 +48,8 @@ func main() {
 	}
 	defer httpClient.Close()
 
-	data, err := httpClient.Get(urlToGet)
+	status, data, err := httpClient.Get(urlToGet)
+	output.Printf("Got status %d\n", status)
 	if err != nil {
 		output.Println("Failed to GET", urlToGet)
 	} else {
