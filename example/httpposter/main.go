@@ -54,7 +54,10 @@ func main() {
 	}
 	defer httpClient.Close()
 
-	status, data, err := httpClient.Post(urlToPostTo, []byte(dataToPost), nil)
+	headers := map[string]string{
+		"accept": "application/json",
+	}
+	status, data, err := httpClient.Post(urlToPostTo, []byte(dataToPost), headers)
 	output.Printf("Got status %d\n", status)
 	if err != nil {
 		output.Println("Failed to GET", urlToPostTo)

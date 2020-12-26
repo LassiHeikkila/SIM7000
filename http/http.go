@@ -158,7 +158,7 @@ func (c *HttpClient) Post(url string, b []byte, headerParams map[string]string) 
 	}
 
 	output.Println("Sending data to module")
-	if downloadReady, _ := c.module.SendATCommand(fmt.Sprintf("AT+HTTPDATA=%d,%d", len(b), 1000), time.Second, "DOWNLOAD"); downloadReady {
+	if downloadReady, _ := c.module.SendATCommand(fmt.Sprintf("AT+HTTPDATA=%d,%d", len(b), 3000), time.Second, "DOWNLOAD"); downloadReady {
 		n, err := c.module.Write(b)
 		if err != nil {
 			output.Println("Error writing data to module:", err)
@@ -181,6 +181,7 @@ func (c *HttpClient) Post(url string, b []byte, headerParams map[string]string) 
 	output.Println(string(response))
 	actionResponse, err := parseHTTPActionResponse(response)
 	if err != nil {
+		output.Println("Error parsing HTTP action response:", err)
 		return 0, nil, err
 	}
 
@@ -208,15 +209,15 @@ func parseHTTPActionResponse(b []byte) (actionResponse, error) {
 			line = bytes.TrimPrefix(line, []byte("+HTTPACTION:"))
 			parts := bytes.Split(line, []byte(","))
 			if len(parts) == 3 {
-				act, err := strconv.ParseInt(string(parts[0]), 10, 64)
+				act, err := strconv.ParseInt(string(bytes.TrimSpace(parts[0])), 10, 64)
 				if err != nil {
 					return actionResponse{}, err
 				}
-				resp, err := strconv.ParseInt(string(parts[1]), 10, 64)
+				resp, err := strconv.ParseInt(string(bytes.TrimSpace(parts[1])), 10, 64)
 				if err != nil {
 					return actionResponse{}, err
 				}
-				dataLen, err := strconv.ParseInt(string(parts[2]), 10, 64)
+				dataLen, err := strconv.ParseInt(string(bytes.TrimSpace(parts[2])), 10, 64)
 				if err != nil {
 					return actionResponse{}, err
 				}

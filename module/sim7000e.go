@@ -53,9 +53,7 @@ func NewSIM7000E(settings Settings) Module {
 	}()
 
 	print("Resetting module")
-	s.SendATCommand("AT+CFUN=0", 10*time.Second, "OK")
-	countdown(15, time.Second)
-	s.SendATCommand("AT+CFUN=1", 10*time.Second, "OK")
+	s.SendATCommand("AT+CFUN=1,1", 10*time.Second, "OK")
 	countdown(15, time.Second)
 
 	print("Trying to connect to module...")
@@ -70,6 +68,9 @@ func NewSIM7000E(settings Settings) Module {
 		}
 		print("Retry in 1 second...")
 	}
+
+	print("Setting echo mode: off")
+	s.SendATCommandNoResponse("ATE0")
 
 	print("Getting signal quality...")
 	response, _ := s.SendATCommandReturnResponse("AT+CSQ", 2*time.Second)
