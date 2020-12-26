@@ -18,9 +18,15 @@ func main() {
 	deviceFlag := flag.String("device", "/dev/ttyS0", "Which device to talk to module through")
 	flag.Parse()
 
-	urlToGet := flag.Arg(0)
-	if urlToGet == "" {
-		output.Println("Please provide a URL to GET as the first unnamed argument")
+	urlToPostTo := flag.Arg(0)
+	if urlToPostTo == "" {
+		output.Println("Please provide a URL to POST to as the first unnamed argument")
+		return
+	}
+
+	dataToPost := flag.Arg(1)
+	if dataToPost == "" {
+		output.Println("Please provide some data to POST as the second unnamed argument")
 		return
 	}
 
@@ -48,9 +54,10 @@ func main() {
 	}
 	defer httpClient.Close()
 
-	data, err := httpClient.Get(urlToGet)
+	status, data, err := httpClient.Post(urlToPostTo, []byte(dataToPost), nil)
+	output.Printf("Got status %d\n", status)
 	if err != nil {
-		output.Println("Failed to GET", urlToGet)
+		output.Println("Failed to GET", urlToPostTo)
 	} else {
 		output.Println("GOT DATA:", string(data))
 	}
