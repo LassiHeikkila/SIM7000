@@ -42,6 +42,7 @@ func NewSIM7000E(settings Settings) Module {
 			CommandResponse{"AT", "OK", time.Second, 10},
 			NormalCommandResponse("ATE0", "OK"),
 			NormalCommandResponse("AT+CSQ", "+CSQ: "),
+			NormalCommandResponse("AT+CPIN?", "+CPIN: READY"),
 			NormalCommandResponse("AT+CSTT?", "+CSTT: "),
 			NormalCommandResponse("AT+CIPSTATUS", "STATE: IP INITIAL"),
 			NormalCommandResponse(fmt.Sprintf(`AT+CSTT="%s"`, settings.APN), "OK"),
