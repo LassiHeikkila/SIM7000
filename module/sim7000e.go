@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/tarm/serial"
@@ -32,112 +33,34 @@ func NewSIM7000E(settings Settings) Module {
 
 	s := new(sim7000e)
 	s.port = p
-	retries := 0
-	print("Trying to connect to module...")
-	for {
-		if gotOK, _ := s.SendATCommand("AT", time.Second, "OK"); gotOK {
-			break
-		}
-		time.Sleep(time.Second)
-		retries++
-		if retries > settings.MaxConnectionAttempts {
-			return nil
-		}
-		print("Retry in 1 second...")
+	print("Initializing module...")
+	script := ChatScript{
+		Aborts: []string{"ERROR", "BUSY", "NO CARRIER", "+CSQ: 99,99"},
+		Commands: []CommandResponse{
+			CommandResponse{"AT", "OK", time.Second, 10},
+			CommandResponse{"AT+CFUN=1,1", "OK", 10 * time.Second, 0},
+			CommandResponse{"AT", "OK", time.Second, 10},
+			NormalCommandResponse("ATE0", "OK"),
+			NormalCommandResponse("AT+CSQ", "+CSQ: "),
+			NormalCommandResponse("AT+CSTT?", "+CSTT: "),
+			NormalCommandResponse("AT+CIPSTATUS", "STATE: IP INITIAL"),
+			NormalCommandResponse(fmt.Sprintf(`AT+CSTT="%s"`, settings.APN), "OK"),
+			NormalCommandResponse("AT+CSTT?", fmt.Sprintf(`+CSTT: "%s"`, settings.APN)),
+			NormalCommandResponse("AT+CIPSTATUS", "STATE: IP START"),
+			CommandResponse{"AT+CIICR", "OK", 30 * time.Second, 0},
+			NormalCommandResponse("AT+CIPSTATUS", "STATE: IP GPRSACT"),
+			NormalCommandResponse("AT+CIFSR", ""),
+			NormalCommandResponse("AT+CIPSTATUS", "STATE: IP STATUS"),
+		},
 	}
-	success := new(bool)
-	defer func() {
-		if !*success {
-			s.Close()
-		}
-	}()
-
-	print("Resetting module")
-	s.SendATCommand("AT+CFUN=1,1", 10*time.Second, "OK")
-	countdown(15, time.Second)
-
-	print("Trying to connect to module...")
-	for {
-		if gotOK, _ := s.SendATCommand("AT", time.Second, "OK"); gotOK {
-			break
-		}
-		time.Sleep(time.Second)
-		retries++
-		if retries > settings.MaxConnectionAttempts {
-			return nil
-		}
-		print("Retry in 1 second...")
-	}
-
-	print("Setting echo mode: off")
-	s.SendATCommandNoResponse("ATE0")
-
-	print("Getting signal quality...")
-	response, _ := s.SendATCommandReturnResponse("AT+CSQ", 2*time.Second)
-	if bytes.Contains(response, []byte("ERROR")) {
-		print("Error getting signal quality report")
-		return nil
-	} else {
-		print("Got signal quality:", dumpBytes(response))
-	}
-
-	countdown(5, time.Second)
-
-	print("Checking supported APNs")
-	response, _ = s.SendATCommandReturnResponse("AT+CGNAPN", 2*time.Second)
-	print("Response:", dumpBytes(response))
-
-	print("Checking current APN setting")
-	response, _ = s.SendATCommandReturnResponse("AT+CSTT?", 2*time.Second)
-	print("Response:", dumpBytes(response))
-	if bytes.Contains(response, []byte(fmt.Sprintf("\"%s\"", settings.APN))) {
-		print("APN is already correct")
-	} else {
-		printf("Setting APN to \"%s\"\n", settings.APN)
-		if gotOK, gotError, _ := s.SendATCommandTwoResponses(fmt.Sprintf("AT+CSTT=\"%s\"", settings.APN), 2*time.Second, "OK", "ERROR"); gotOK {
-			print("APN set successfully")
-		} else if gotError {
-			print("Setting APN failed")
-			return nil
-		}
-	}
-
-	countdown(5, time.Second)
-
-	print("Checking APN is correct")
-	s.SendATCommandNoResponse("AT+CSTT?")
-	response, _ = s.ReadATResponse(2 * time.Second)
-	if bytes.Contains(response, []byte(settings.APN)) {
-		print("APN is correct")
-	} else {
-		print("APN is wrong, response: ", dumpBytes(response))
+	output, err := s.RunChatScript(script)
+	if err != nil {
+		println("Initialization script failed with error:", err.Error())
+		println("Output from script:\n", dumpBytes(output))
 		return nil
 	}
+	println("Output from script:\n", dumpBytes(output))
 
-	print("Bringing up connection")
-	if gotOK, gotError, _ := s.SendATCommandTwoResponses("AT+CIICR", 2*time.Second, "OK", "ERROR"); gotOK {
-		print("Connection brought up successfully")
-	} else if gotError {
-		print("Failed to bring up connection")
-		return nil
-	}
-
-	countdown(5, time.Second)
-
-	print("Getting IP address")
-	if gotError, _ := s.SendATCommand("AT+CIFSR", 2*time.Second, "ERROR"); !gotError {
-		b, _ := s.ReadATResponse(time.Second)
-		print("Got IP address:", dumpBytes(b))
-	} else if gotError {
-		print("Error checking IP address")
-		return nil
-	}
-
-	print("Checking current state")
-	response, _ = s.SendATCommandReturnResponse("AT+CIPSTATUS", 5*time.Second)
-	print("response:", dumpBytes(response))
-
-	*success = true
 	return s
 }
 
@@ -171,7 +94,7 @@ func (s *sim7000e) SendATCommand(cmd string, timeout time.Duration, expectedRepl
 
 func (s *sim7000e) SendATCommandReturnResponse(cmd string, timeout time.Duration) ([]byte, error) {
 	s.port.Flush()
-	s.port.Write([]byte(cmd + "\r"))
+	s.port.Write([]byte(cmd + "\r\n"))
 
 	return s.ReadATResponse(timeout)
 }
@@ -229,6 +152,7 @@ func (s *sim7000e) ReadUntilDelim(delim byte) ([]byte, error) {
 	}
 	return b, nil
 }
+
 func (s *sim7000e) ReadATResponse(timeout time.Duration) ([]byte, error) {
 	// AT command response starts and ends with <CR><LF>
 	// so e.g.:
@@ -237,7 +161,7 @@ func (s *sim7000e) ReadATResponse(timeout time.Duration) ([]byte, error) {
 	// So, we should read until we've seen two <CR><LF> and output the stuff in between
 
 	reader := bufio.NewReader(s.port)
-	resp := make([][]byte, 1)
+	resp := make([][]byte, 0)
 
 	start := time.Now()
 
@@ -257,4 +181,45 @@ func (s *sim7000e) ReadATResponse(timeout time.Duration) ([]byte, error) {
 		resp = append(resp, c)
 	}
 	return bytes.Join(resp, []byte("\n")), nil
+}
+
+func (s *sim7000e) RunChatScript(script ChatScript) ([]byte, error) {
+	containsAbortTerm := func(response []byte) bool {
+		for _, term := range script.Aborts {
+			if strings.Contains(string(response), term) {
+				return true
+			}
+		}
+		return false
+	}
+	output := make([]byte, 0, 64)
+	retriesLeft := 0
+	for i := range script.Commands {
+		retriesLeft = script.Commands[i].Retries
+	tryAtCommand:
+		resp, err := s.SendATCommandReturnResponse(script.Commands[i].Command, script.Commands[i].Timeout)
+		if err != nil {
+			return output, err
+		}
+		output = append(output, resp...)
+		if containsAbortTerm(resp) {
+			return output, fmt.Errorf("Aborted with %s", string(resp))
+		}
+		if script.Commands[i].Response == "" {
+			// reply doesn't matter as long as it doesn't contain an abort term
+			continue
+		}
+		if !strings.Contains(string(resp), script.Commands[i].Response) {
+			retriesLeft--
+			if retriesLeft > 0 {
+				goto tryAtCommand
+			}
+			return output, fmt.Errorf(
+				"Response \"%s\" did not contain expected \"%s\"",
+				string(resp),
+				script.Commands[i].Response,
+			)
+		}
+	}
+	return output, nil
 }
