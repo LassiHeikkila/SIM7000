@@ -13,6 +13,7 @@ type Module interface {
 	ReadATResponse(timeout time.Duration) ([]byte, error)
 	Write(buffer []byte) (int, error)
 	Read(buffer []byte) (int, error)
+	RunChatScript(script ChatScript) ([]byte, error)
 
 	Close()
 }
@@ -26,4 +27,20 @@ type Settings struct {
 	PIN                   string
 	SerialPort            string
 	MaxConnectionAttempts int
+}
+
+type ChatScript struct {
+	Aborts   []string
+	Commands []CommandResponse
+}
+
+type CommandResponse struct {
+	Command  string
+	Response string
+	Timeout  time.Duration
+	Retries  int
+}
+
+func NormalCommandResponse(cmd string, resp string) CommandResponse {
+	return CommandResponse{cmd, resp, 100 * time.Millisecond, 0}
 }
