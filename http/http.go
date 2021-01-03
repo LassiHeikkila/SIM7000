@@ -26,7 +26,7 @@ type Settings struct {
 	ProxyPort int
 }
 
-// New returns a ready to use HttpClient, given a working Module and working Settings.
+// NewClient returns a ready to use HttpClient, given a working Module and working Settings.
 // If working HttpClient cannot be created, nil is returned.
 func NewClient(module module.Module, settings Settings) *HttpClient {
 	c := &HttpClient{module: module}

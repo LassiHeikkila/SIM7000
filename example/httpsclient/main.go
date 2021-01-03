@@ -4,7 +4,7 @@ import (
 	"flag"
 	"os"
 
-	"github.com/LassiHeikkila/SIM7000/http"
+	"github.com/LassiHeikkila/SIM7000/https"
 	"github.com/LassiHeikkila/SIM7000/module"
 	"github.com/LassiHeikkila/SIM7000/output"
 )
@@ -16,7 +16,13 @@ func init() {
 func main() {
 	apnFlag := flag.String("apn", "internet", "Which APN to use when connecting to network")
 	deviceFlag := flag.String("device", "/dev/ttyS0", "Which device to talk to module through")
+	certFlag := flag.String("cert", "", "Path to certificate")
 	flag.Parse()
+
+	if *certFlag == "" {
+		output.Println("You must provide a path to a certificate file with -cert flag")
+		return
+	}
 
 	urlToPostTo := flag.Arg(0)
 	if urlToPostTo == "" {
@@ -43,21 +49,26 @@ func main() {
 	}
 	defer m.Close()
 
-	httpClientSettings := http.Settings{
+	httpsClientSettings := https.Settings{
 		APN: moduleSettings.APN,
 	}
 
-	httpClient := http.NewClient(m, httpClientSettings)
-	if httpClient == nil {
+	httpsClient := https.NewClient(m, httpsClientSettings)
+	if httpsClient == nil {
 		output.Println("Failed to create working HTTP client")
 		return
 	}
-	defer httpClient.Close()
+	defer httpsClient.Close()
+
+	if err := httpsClient.ConfigureSSL(*certFlag); err != nil {
+		output.Println("Error configuring SSL on module:", err.Error())
+		return
+	}
 
 	headers := map[string]string{
 		"accept": "application/json",
 	}
-	status, data, err := httpClient.Post(urlToPostTo, []byte(dataToPost), headers)
+	status, data, err := httpsClient.Post(urlToPostTo, []byte(dataToPost), headers)
 	output.Printf("Got status %d\n", status)
 	if err != nil {
 		output.Println("Failed to POST to", urlToPostTo)
