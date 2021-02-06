@@ -42,7 +42,7 @@ func main() {
 		MaxConnectionAttempts: 30,
 	}
 
-	m := module.NewSIM7000E(moduleSettings)
+	m := module.NewSIM7000(moduleSettings)
 	if m == nil {
 		output.Println("Failed to create working module")
 		return
@@ -59,19 +59,19 @@ func main() {
 		return
 	}
 	defer httpsClient.Close()
-
-	if err := httpsClient.ConfigureSSL(*certFlag); err != nil {
-		output.Println("Error configuring SSL on module:", err.Error())
-		return
-	}
-
+	/*
+		if err := httpsClient.UploadCert(*certFlag); err != nil {
+			output.Println("Error configuring SSL on module:", err.Error())
+			return
+		}
+	*/
 	headers := map[string]string{
 		"accept": "application/json",
 	}
-	status, data, err := httpsClient.Post(urlToPostTo, []byte(dataToPost), headers)
+	status, data, err := httpsClient.Post(urlToPostTo, []byte(dataToPost), headers, *certFlag)
 	output.Printf("Got status %d\n", status)
 	if err != nil {
-		output.Println("Failed to POST to", urlToPostTo)
+		output.Println("Failed to POST to", urlToPostTo, ":", err)
 	} else {
 		output.Println("GOT DATA:", string(data))
 	}

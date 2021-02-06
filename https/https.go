@@ -32,8 +32,8 @@ type Settings struct {
 
 // NewClient returns a ready to use HttpsClient, given a working Module and working Settings.
 // If working HttpsClient cannot be created, nil is returned.
-func NewClient(module module.Module, settings Settings) *HttpsClient {
-	c := &HttpsClient{module: module}
+func NewClient(m module.Module, settings Settings) *HttpsClient {
+	c := &HttpsClient{module: m}
 
 	output.Println("Setting module to HTTP mode...")
 
@@ -44,15 +44,26 @@ func NewClient(module module.Module, settings Settings) *HttpsClient {
 		return nil
 	}
 
-	output.Println("Setting APN")
-
-	if gotOK, _ := c.module.SendATCommand(fmt.Sprintf("AT+CNACT=1,\"%s\"", settings.APN), 2*time.Second, "OK"); gotOK {
-		output.Println("HTTP APN configured")
-	} else {
-		output.Println("Failed to configure HTTP APN")
-		return nil
+	script := module.ChatScript{
+		Aborts: []string{"ERROR", "BUSY", "NO CARRIER", "+CSQ: 99,99"},
+		Commands: []module.CommandResponse{
+			module.CommandResponse{"AT", "OK", time.Second, 10},
+			module.CommandResponse{"AT+CFUN=0", "OK", 10 * time.Second, 0},
+			module.CommandResponse{"AT", "OK", time.Second, 10},
+			module.NormalCommandResponse(fmt.Sprintf(`AT+CGDCONT=1,"IP","%s"`, settings.APN), "OK"),
+			module.CommandResponse{"AT+CFUN=1", "OK", 10 * time.Second, 0},
+			module.NormalCommandResponse(`AT+CPIN?`, "+CPIN: READY"),
+			module.NormalCommandResponse(`AT+CGATT?`, "+CGATT: 1"),
+			module.CommandResponse{`AT+CNACT=1`, "+APP PDP: ACTIVE", 10 * time.Second, 0},
+			module.NormalCommandResponse(`AT+CNACT?`, "OK"),
+		},
 	}
 
+	_, err := c.module.RunChatScript(script)
+	if err != nil {
+		output.Println("Error initializing module:", err)
+		return nil
+	}
 	return c
 }
 
@@ -66,7 +77,7 @@ func (c *HttpsClient) Close() {
 	}
 }
 
-func (c *HttpsClient) ConfigureSSL(certPath string) error {
+func (c *HttpsClient) UploadCert(certPath string) error {
 	output.Println("Storing certificate on module filesystem")
 	if gotOK, _ := c.module.SendATCommand("AT+CFSINIT", time.Second, "OK"); !gotOK {
 		return errors.New("Unable to use module filesystem")
@@ -87,7 +98,8 @@ func (c *HttpsClient) ConfigureSSL(certPath string) error {
 	}
 	if downloadReady, _ := c.module.SendATCommand(
 		fmt.Sprintf(
-			`AT+CFSWFILE=3,"%s",0,%d,%d`,
+			`AT+CFSWFILE=%d,"%s",0,%d,%d`,
+			3,
 			certName,
 			len(certContents),
 			timeoutMs),
@@ -101,39 +113,55 @@ func (c *HttpsClient) ConfigureSSL(certPath string) error {
 	}
 	c.module.SendATCommand("AT+CFSTERM", time.Second, "OK")
 
+	return nil
+}
+
+func (c *HttpsClient) configureSSL(atcmd string) error {
+	if gotOK, _ := c.module.SendATCommand(
+		atcmd,
+		time.Second,
+		"OK",
+	); !gotOK {
+		return errors.New("Failed to configure")
+	}
+	return nil
+}
+
+func (c *HttpsClient) Get(url string, certName string) (int, []byte, error) {
 	// documentation says the options are
 	//		1 QAPI_NET_SSL_CERTIFICATE_E
 	//		2 QAPI_NET_SSL_CA_LIST_E
 	//		3 QAPI_NET_SSL_PSK_TABLE_E
 	// and the example uses 2, so let's go with that for now
 	const sslType = 2
-	if gotOK, _ := c.module.SendATCommand(
-		fmt.Sprintf(
-			`AT+CSSLCFG="convert",%d,"%s"`,
-			sslType,
-			certName,
-		),
-		time.Second,
-		"OK",
-	); !gotOK {
-		return errors.New("Failed to convert certificate")
+	if err := c.configureSSL(fmt.Sprintf(`AT+CSSLCFG="convert",%d,"%s"`, sslType, certName)); err != nil {
+		return 0, nil, errors.New("Failed to convert certificate")
+	}
+	if err := c.configureSSL(fmt.Sprintf(`AT+CSSLCFG="sslversion",%d,%d"`, 1, 3)); err != nil {
+		return 0, nil, errors.New("Failed to set sslversion")
 	}
 
 	if gotOK, _ := c.module.SendATCommand(
-		fmt.Sprintf(`AT+SHSSL=1,"%s"`, certName),
+		//fmt.Sprintf(`AT+SHSSL=1,"%s"`, certName),
+		`AT+SHSSL=1,""`,
 		time.Second,
 		"OK",
 	); !gotOK {
-		return errors.New("Failed to set configure certificate")
+		return 0, nil, errors.New("Failed to set configure certificate")
 	}
 
-	return nil
-}
-
-func (c *HttpsClient) Get(url string) (int, []byte, error) {
 	// set URL
 	output.Println("Setting URL")
-	if ok, _ := c.module.SendATCommand(fmt.Sprintf("AT+SHCONF=\"URL\",\"%s\"", url), 2*time.Second, "OK"); ok {
+	// strip path from url, i.e. https://somesite.org/some/path --> https://somesite.org
+	idx := strings.Index(url, "://")
+	start := 0
+	end := len(url)
+	firstNonSchemeSlash := strings.Index(url[idx+3:], "/")
+	if firstNonSchemeSlash != -1 {
+		end = start + idx + 3 + firstNonSchemeSlash
+	}
+	output.Println("Setting URL")
+	if ok, _ := c.module.SendATCommand(fmt.Sprintf("AT+SHCONF=\"URL\",\"%s\"", url[start:end]), 2*time.Second, "OK"); ok {
 		output.Println("URL set to", url)
 	} else {
 		output.Println("Failed to set URL to", url)
@@ -157,7 +185,22 @@ func (c *HttpsClient) Get(url string) (int, []byte, error) {
 		output.Println("Failed to connect")
 		return 0, nil, errors.New("Connect failed")
 	}
-	response, _ := c.module.SendATCommandReturnResponse(fmt.Sprintf(`AT+SHREQ="%s",1`, url), time.Second)
+
+	if connectState, _ := c.module.SendATCommand("A+SHSTATE?", time.Second, "+SHSTATE: 1"); !connectState {
+		output.Println("Wrong connect state")
+		return 0, nil, errors.New("Connection state wrong")
+	}
+
+	if ok, _ := c.module.SendATCommand("AT+SHCHEAD", time.Second, "OK"); !ok {
+		output.Println("Failed to clear header")
+		return 0, nil, errors.New("Failed to clear header")
+	}
+
+	if ok, _ := c.module.SendATCommand("AT+SHCPARA", time.Second, "OK"); !ok {
+		output.Println("Failed to clear body content")
+	}
+
+	response, _ := c.module.SendATCommandReturnResponse(fmt.Sprintf(`AT+SHREQ="%s",1`, url[end:]), time.Second)
 	output.Println(string(response))
 	shreqResponse, err := parseSHREQResponse(response)
 	if err != nil {
@@ -171,11 +214,35 @@ func (c *HttpsClient) Get(url string) (int, []byte, error) {
 		data, _ = c.module.SendATCommandReturnResponse(fmt.Sprintf("AT+SHREAD=0,%d", shreqResponse.dataLength), 5*time.Second)
 	}
 
+	_, _ = c.module.SendATCommand(`AT+SHDISC`, time.Second, "OK")
+
 	return shreqResponse.responseCode, data, nil
 }
 
 // Post executes a HTTP Post, returning the HTTP status code and any response data or error
-func (c *HttpsClient) Post(url string, b []byte, headerParams map[string]string) (int, []byte, error) {
+func (c *HttpsClient) Post(url string, b []byte, headerParams map[string]string, certName string) (int, []byte, error) {
+	// documentation says the options are
+	//		1 QAPI_NET_SSL_CERTIFICATE_E
+	//		2 QAPI_NET_SSL_CA_LIST_E
+	//		3 QAPI_NET_SSL_PSK_TABLE_E
+	// and the example uses 2, so let's go with that for now
+	//const sslType = 2
+	//if err := c.configureSSL(fmt.Sprintf(`AT+CSSLCFG="convert",%d,"%s"`, sslType, certName)); err != nil {
+	//	return 0, nil, errors.New("Failed to convert certificate")
+	//}
+	if err := c.configureSSL(fmt.Sprintf(`AT+CSSLCFG="sslversion",%d,%d`, 1, 3)); err != nil {
+		return 0, nil, errors.New("Failed to set sslversion")
+	}
+
+	if gotOK, _ := c.module.SendATCommand(
+		//fmt.Sprintf(`AT+SHSSL=1,"%s"`, certName),
+		`AT+SHSSL=1,""`,
+		time.Second,
+		"OK",
+	); !gotOK {
+		return 0, nil, errors.New("Failed to set configure certificate")
+	}
+
 	// set URL
 	output.Println("Setting URL")
 	// strip path from url, i.e. https://somesite.org/some/path --> https://somesite.org
@@ -186,21 +253,21 @@ func (c *HttpsClient) Post(url string, b []byte, headerParams map[string]string)
 	if firstNonSchemeSlash != -1 {
 		end = start + idx + 3 + firstNonSchemeSlash
 	}
-	if ok, _ := c.module.SendATCommand(fmt.Sprintf("AT+SHCONF=\"URL\",\"%s\"", url[start:end]), 2*time.Second, "OK"); ok {
-		output.Println("URL set to", url)
+	if ok, _ := c.module.SendATCommand(fmt.Sprintf(`AT+SHCONF="URL","%s"`, url[start:end]), 2*time.Second, "OK"); ok {
+		output.Println("URL set to", url[start:end])
 	} else {
-		output.Println("Failed to set URL to", url)
+		output.Println("Failed to set URL to", url[start:end])
 		return 0, nil, errors.New("HTTP service configuration failed")
 	}
 	// set BODYLEN
 	output.Println("Setting BODYLEN")
-	if ok, _ := c.module.SendATCommand(fmt.Sprintf("AT+SHCONF=\"BODYLEN\",\"%d\"", 1024), 2*time.Second, "OK"); !ok {
+	if ok, _ := c.module.SendATCommand(fmt.Sprintf(`AT+SHCONF="BODYLEN",%d`, 1024), 2*time.Second, "OK"); !ok {
 		output.Println("Failed to set BODYLEN")
 		return 0, nil, errors.New("HTTP service configuration failed")
 	}
 	// set HEADERLEN
 	output.Println("Setting HEADERLEN")
-	if ok, _ := c.module.SendATCommand(fmt.Sprintf("AT+SHCONF=\"HEADERLEN\",\"%d\"", 350), 2*time.Second, "OK"); !ok {
+	if ok, _ := c.module.SendATCommand(fmt.Sprintf(`AT+SHCONF="HEADERLEN",%d`, 350), 2*time.Second, "OK"); !ok {
 		output.Println("Failed to set HEADERLEN")
 		return 0, nil, errors.New("HTTP service configuration failed")
 	}
@@ -208,6 +275,19 @@ func (c *HttpsClient) Post(url string, b []byte, headerParams map[string]string)
 	if ok, _ := c.module.SendATCommand("AT+SHCONN", time.Second, "OK"); !ok {
 		output.Println("Failed to connect")
 		return 0, nil, errors.New("Connect failed")
+	}
+
+	if connectState, _ := c.module.SendATCommand("A+SHSTATE?", time.Second, "+SHSTATE: 1"); !connectState {
+		output.Println("Wrong connect state")
+		return 0, nil, errors.New("Connection state wrong")
+	}
+
+	if ok, _ := c.module.SendATCommand("AT+SHCHEAD", time.Second, "OK"); !ok {
+		output.Println("Failed to clear header")
+	}
+
+	if ok, _ := c.module.SendATCommand("AT+SHCPARA", time.Second, "OK"); !ok {
+		output.Println("Failed to clear body content")
 	}
 
 	if headerParams != nil {
@@ -235,7 +315,7 @@ func (c *HttpsClient) Post(url string, b []byte, headerParams map[string]string)
 
 	// execute POST
 	output.Println("Executing POST")
-	response, _ := c.module.SendATCommandReturnResponse(fmt.Sprintf(`AT+SHREQ="%s",3`, url), time.Second)
+	response, _ := c.module.SendATCommandReturnResponse(fmt.Sprintf(`AT+SHREQ="%s",3`, url[end:]), time.Second)
 	output.Println(string(response))
 	shreqResponse, err := parseSHREQResponse(response)
 	if err != nil {
@@ -248,6 +328,8 @@ func (c *HttpsClient) Post(url string, b []byte, headerParams map[string]string)
 		output.Println("Reading data")
 		data, _ = c.module.SendATCommandReturnResponse(fmt.Sprintf("AT+SHREAD=0,%d", shreqResponse.dataLength), 5*time.Second)
 	}
+
+	_, _ = c.module.SendATCommand(`AT+SHDISC`, time.Second, "OK")
 
 	return shreqResponse.responseCode, data, nil
 }

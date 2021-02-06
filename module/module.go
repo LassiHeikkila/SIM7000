@@ -19,11 +19,13 @@ type Module interface {
 }
 
 // Settings contains needed info for connecting the module to network,
-// i.e. what APN to use,
-// PIN for SIM card, if any,
+// i.e. what APN to use, username and password for APN,
+// PIN for SIM card, if any (not supported yet),
 // and which serial port to use for communicating with module
 type Settings struct {
 	APN                   string
+	Username              string
+	Password              string
 	PIN                   string
 	SerialPort            string
 	MaxConnectionAttempts int

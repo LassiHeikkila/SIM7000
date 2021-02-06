@@ -15,8 +15,8 @@ type sim7000e struct {
 	port *serial.Port
 }
 
-// NewSIM7000E returns a ready to use Module
-func NewSIM7000E(settings Settings) Module {
+// NewSIM7000 returns a ready to use Module
+func NewSIM7000(settings Settings) Module {
 	c := serial.Config{
 		Name:        settings.SerialPort,
 		Baud:        115200,
@@ -29,6 +29,22 @@ func NewSIM7000E(settings Settings) Module {
 	p, err := serial.OpenPort(&c)
 	if err != nil {
 		return nil
+	}
+
+	constructCSTT := func(apn, username, password string) string {
+		if len(apn) > 50 {
+			panic("APN too long, maximum length is 50")
+		}
+		if len(username) > 50 {
+			panic("USERNAME too long, maximum length is 50")
+		}
+		if len(password) > 50 {
+			panic("PASSWORD too long, maximum length is 50")
+		}
+		if username == "" && password == "" {
+			return fmt.Sprintf(`AT+CSTT="%s"`, settings.APN)
+		}
+		return fmt.Sprintf(`AT+CSTT="%s","%s","%s"`, settings.APN, settings.Username, settings.Password)
 	}
 
 	s := new(sim7000e)
@@ -45,7 +61,7 @@ func NewSIM7000E(settings Settings) Module {
 			NormalCommandResponse("AT+CPIN?", "+CPIN: READY"),
 			NormalCommandResponse("AT+CSTT?", "+CSTT: "),
 			NormalCommandResponse("AT+CIPSTATUS", "STATE: IP INITIAL"),
-			NormalCommandResponse(fmt.Sprintf(`AT+CSTT="%s"`, settings.APN), "OK"),
+			NormalCommandResponse(constructCSTT(settings.APN, settings.Username, settings.Password), "OK"),
 			NormalCommandResponse("AT+CSTT?", fmt.Sprintf(`+CSTT: "%s"`, settings.APN)),
 			NormalCommandResponse("AT+CIPSTATUS", "STATE: IP START"),
 			CommandResponse{"AT+CIICR", "OK", 30 * time.Second, 0},

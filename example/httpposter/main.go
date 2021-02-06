@@ -36,7 +36,7 @@ func main() {
 		MaxConnectionAttempts: 30,
 	}
 
-	m := module.NewSIM7000E(moduleSettings)
+	m := module.NewSIM7000(moduleSettings)
 	if m == nil {
 		output.Println("Failed to create working module")
 		return
