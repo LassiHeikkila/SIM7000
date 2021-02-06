@@ -14,6 +14,7 @@ type Module interface {
 	Write(buffer []byte) (int, error)
 	Read(buffer []byte) (int, error)
 	RunChatScript(script ChatScript) ([]byte, error)
+	GetIPStatus() CIPStatus 
 
 	Close()
 }

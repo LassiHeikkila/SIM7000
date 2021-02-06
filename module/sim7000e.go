@@ -49,6 +49,12 @@ func NewSIM7000(settings Settings) Module {
 
 	s := new(sim7000e)
 	s.port = p
+	state := s.GetIPStatus()
+	switch state {
+	case IPStatus, IPClosed:
+		// already setup
+		return s
+	}
 	print("Initializing module...")
 	script := ChatScript{
 		Aborts: []string{"ERROR", "BUSY", "NO CARRIER", "+CSQ: 99,99"},
@@ -239,4 +245,9 @@ func (s *sim7000e) RunChatScript(script ChatScript) ([]byte, error) {
 		}
 	}
 	return output, nil
+}
+
+func (s *sim7000e) GetIPStatus() CIPStatus {
+	resp, _ := s.SendATCommandReturnResponse(`AT+CIPSTATUS`, time.Second)
+	return ParseCIPSTATUSResp(resp)
 }

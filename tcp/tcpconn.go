@@ -77,17 +77,25 @@ func getModule() (module.Module, error) {
 	}
 	// module ready to use
 
+	// check existing DNS config
+	resp, _ := m.SendATCommandReturnResponse(`AT+CDNSCFG?`, time.Second)
+	primary, secondary := parseDNCFGQueryResponse(resp)
+
 	// configure DNS servers if needed / wanted
 	if dns1, dns1present := globalSettings[`DNS1`]; dns1present {
 		if dns2, dns2present := globalSettings[`DNS2`]; dns2present {
-			if gotOK, _ := m.SendATCommand(fmt.Sprintf(`AT+CDNSCFG=%s,%s`, dns1, dns2), time.Second, `OK`); !gotOK {
-				m.Close()
-				return nil, errors.New("Failed to apply DNS configuration")
+			if dns1 != primary || dns2 != secondary {
+				if gotOK, _ := m.SendATCommand(fmt.Sprintf(`AT+CDNSCFG=%s,%s`, dns1, dns2), time.Second, `OK`); !gotOK {
+					m.Close()
+					return nil, errors.New("Failed to apply DNS configuration")
+				}
 			}
 		} else {
-			if gotOK, _ := m.SendATCommand(fmt.Sprintf(`AT+CDNSCFG=%s`, dns1), time.Second, `OK`); !gotOK {
-				m.Close()
-				return nil, errors.New("Failed to apply DNS configuration")
+			if dns1 != primary {
+				if gotOK, _ := m.SendATCommand(fmt.Sprintf(`AT+CDNSCFG=%s`, dns1), time.Second, `OK`); !gotOK {
+					m.Close()
+					return nil, errors.New("Failed to apply DNS configuration")
+				}
 			}
 		}
 	}
@@ -122,7 +130,7 @@ func dialTCP4(address string) (*TCPConn, error) {
 		Port: port,
 	}
 
-	resp, _ := m.SendATCommandReturnResponse(fmt.Sprintf(`AT+CIPSTART="TCP",%s,%d`, ip, port), 2*time.Second)
+	_, _=  m.SendATCommandReturnResponse(fmt.Sprintf(`AT+CIPSTART="TCP",%s,%d`, ip, port), 2*time.Second)
 
 	return nil, nil
 }

@@ -2,6 +2,7 @@ package tcp
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"strconv"
 	"strings"
@@ -43,39 +44,31 @@ func parseDNSGIPResp(b []byte) (ip1 string, ip2 string, err error) {
 	return "", "", errors.New("No IP could be parsed from reply")
 }
 
-func ParseCIPSTATUSResp(b []byte) CIPStatus {
-	scanner := bufio.NewScanner(strings.NewReader(string(b)))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "STATE:") {
-			state := strings.TrimSpace(strings.TrimPrefix(line, "STATE:"))
-			switch state {
-			case "IP INITIAL":
-				return IPInitial
-			case "IP START":
-				return IPStart
-			case "IP CONFIG":
-				return IPConfig
-			case "IP GPRSACT":
-				return IPGPRSAct
-			case "IP STATUS":
-				return IPStatus
-			case "TCP CONNECTING", "UDP CONNECTING", "SERVER LISTENING", "IP PROCESSING":
-				return IPProcessing
-			case "CONNECT OK":
-				return IPConnectOK
-			case "TCP CLOSING", "UDP CLOSING":
-				return IPClosing
-			case "TCP CLOSED", "UDP CLOSED":
-				return IPClosed
-			case "PDP DEACT":
-				return IPPDPDeact
-			default:
-				return IPStatusUnknown
+func parseDNCFGQueryResponse(resp []byte) (primary string, secondary string) {
+	lines := bytes.Split(resp, []byte("\n"))
+
+	extractIP := func(line []byte) []byte {
+		parts := bytes.Split(line, []byte(`:`))
+		if len(parts) != 2 {
+			return nil
+		}
+		return bytes.TrimSpace(parts[1])
+	}
+
+	for _, line := range lines {
+		if bytes.HasPrefix(line, []byte(`PrimaryDns:`)) {
+			ip := extractIP(line)
+			if ip != nil {
+				primary = string(ip)
+			}
+		} else if bytes.HasPrefix(line, []byte(`SecondaryDns:`)) {
+			ip := extractIP(line)
+			if ip != nil {
+				secondary = string(ip)
 			}
 		}
 	}
-	return IPStatusUnknown
+	return
 }
 
 func parseAddress(address string) (ip string, port int) {
@@ -88,9 +81,41 @@ func parseAddress(address string) (ip string, port int) {
 		portOrService := parts[1]
 		if p, err := strconv.ParseInt(portOrService, 10, 64); err == nil {
 			return domainOrIP, int(p)
-		} else {
-
+		}
+		// can't parse port as int, must be a string
+		if p_num, ok := parseService(portOrService); ok {
+			return domainOrIP, int(p_num)
 		}
 	}
 	return "", 0
+}
+
+// convert service to port number
+// only for well known basic services
+// e.g. 
+// 	SSH 	-> 22
+// 	HTTP 	-> 80
+// 	HTTPS 	-> 443
+// returns port number and boolean indicating if service was resolved
+// if known service, returns default port and true
+// if unknown service, returns 0 and false
+func parseService(service string) (uint16, bool) {
+	switch service {
+	case "ssh":
+		return 22, true
+	case "telnet":
+		return 23, true
+	case "smtp":
+		return 25, true
+	case "dns":
+		return 53, true
+	case "http":
+		return 80, true
+	case "https":
+		return 443, true
+	case "ntp":
+		return 123, true
+	default:
+		return 0, false
+	}
 }

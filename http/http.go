@@ -209,16 +209,20 @@ func parseHTTPActionResponse(b []byte) (actionResponse, error) {
 			line = bytes.TrimPrefix(line, []byte("+HTTPACTION:"))
 			parts := bytes.Split(line, []byte(","))
 			if len(parts) == 3 {
-				act, err := strconv.ParseInt(string(bytes.TrimSpace(parts[0])), 10, 64)
-				if err != nil {
+				validAct := func(input int64) bool { return input >= 0 && input < 4 }
+				validResp := func(input int64) bool { return input > 0 && input < 999 }
+				validLen := func(input int64) bool { return input > 0 && input < 319488 } // 319488 is max data size supported by module
+
+				act, err := strconv.ParseInt(string(bytes.TrimSpace(parts[0])), 10, 32)
+				if err != nil || !validAct(act) {
 					return actionResponse{}, err
 				}
-				resp, err := strconv.ParseInt(string(bytes.TrimSpace(parts[1])), 10, 64)
-				if err != nil {
+				resp, err := strconv.ParseInt(string(bytes.TrimSpace(parts[1])), 10, 32)
+				if err != nil || !validResp(resp) {
 					return actionResponse{}, err
 				}
-				dataLen, err := strconv.ParseInt(string(bytes.TrimSpace(parts[2])), 10, 64)
-				if err != nil {
+				dataLen, err := strconv.ParseInt(string(bytes.TrimSpace(parts[2])), 10, 32)
+				if err != nil || !validLen(dataLen) {
 					return actionResponse{}, err
 				}
 				return actionResponse{
