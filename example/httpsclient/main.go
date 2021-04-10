@@ -1,16 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
-	"os"
+	"io/ioutil"
+	"log"
+	nethttp "net/http"
 
 	"github.com/LassiHeikkila/SIM7000/https_native"
 	"github.com/LassiHeikkila/SIM7000/output"
 )
 
 func init() {
-	output.SetWriter(os.Stdout)
+	output.SetWriter(log.Writer())
 }
 
 func main() {
@@ -19,10 +22,10 @@ func main() {
 	certFlag := flag.String("cert", "", "Path to certificate")
 	flag.Parse()
 
-	if *certFlag == "" {
-		output.Println("You must provide a path to a certificate file with -cert flag")
-		return
-	}
+	//if *certFlag == "" {
+	//	output.Println("You must provide a path to a certificate file with -cert flag")
+	//	return
+	//}
 
 	urlToPostTo := flag.Arg(0)
 	if urlToPostTo == "" {
@@ -37,7 +40,10 @@ func main() {
 	}
 
 	httpsClientSettings := https.Settings{
-		APN: moduleSettings.APN,
+		APN:         *apnFlag,
+		SerialPort:  *deviceFlag,
+		CertPath:    *certFlag,
+		TraceLogger: log.Default(),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -55,14 +61,20 @@ func main() {
 			return
 		}
 	*/
-	headers := map[string]string{
-		"accept": "application/json",
+	client := nethttp.Client{
+		Transport: httpsClient,
 	}
-	status, data, err := httpsClient.Post(urlToPostTo, []byte(dataToPost), headers, *certFlag)
-	output.Printf("Got status %d\n", status)
+	buf := bytes.NewBuffer([]byte(flag.Arg(1)))
+	resp, err := client.Post(flag.Arg(0), "application/json", buf)
 	if err != nil {
 		output.Println("Failed to POST to", urlToPostTo, ":", err)
 	} else {
-		output.Println("GOT DATA:", string(data))
+		output.Println("Response status:", resp.Status)
+		b, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			output.Println("Error reading response body:", err)
+		} else {
+			output.Printf("Response:\n%s\n", string(b))
+		}
 	}
 }

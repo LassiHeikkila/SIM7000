@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/LassiHeikkila/SIM7000/output"
 )
 
 /* what AT commands are needed for HTTPS application?
@@ -41,8 +43,91 @@ func parseResponse_SHSSL_WRITE(r []string, ok *bool) error {
 }
 
 // requires special implementation
-func parseResponse_SHCONF_READ(r []string, paramTag *string, paramValue *string) error {
-	return &noImpl{}
+func parseResponse_SHCONF_READ(
+	r []string,
+	url *string,
+	timeout *int,
+	bodylen *int,
+	headerlen *int,
+	pollcnt *int,
+	pollintms *int,
+	ipver *int,
+) error {
+	shouldParse := false
+	for _, line := range r {
+		if strings.TrimSpace(line) == "OK" {
+			return nil
+		}
+		if strings.TrimSpace(line) == "+SHCONF:" {
+			shouldParse = true
+			continue
+		}
+		if !shouldParse {
+			continue
+		}
+		parts := strings.SplitN(strings.TrimSpace(line), ":", 2)
+		if len(parts) != 2 {
+			// this isn't something we expected
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		switch key {
+		case "URL":
+			if url != nil {
+				*url = value
+			}
+		case "TIMEOUT":
+			if timeout != nil {
+				v, err := strconv.ParseInt(value, 10, 64)
+				if err != nil {
+					continue
+				}
+				*timeout = int(v)
+			}
+		case "BODYLEN":
+			if bodylen != nil {
+				v, err := strconv.ParseInt(value, 10, 64)
+				if err != nil {
+					continue
+				}
+				*bodylen = int(v)
+			}
+		case "HEADERLEN":
+			if headerlen != nil {
+				v, err := strconv.ParseInt(value, 10, 64)
+				if err != nil {
+					continue
+				}
+				*headerlen = int(v)
+			}
+		case "POLLCNT":
+			if pollcnt != nil {
+				v, err := strconv.ParseInt(value, 10, 64)
+				if err != nil {
+					continue
+				}
+				*pollcnt = int(v)
+			}
+		case "POLLINTMS":
+			if pollintms != nil {
+				v, err := strconv.ParseInt(value, 10, 64)
+				if err != nil {
+					continue
+				}
+				*pollintms = int(v)
+			}
+		case "IPVER":
+			if ipver != nil {
+				v, err := strconv.ParseInt(value, 10, 64)
+				if err != nil {
+					continue
+				}
+				*ipver = int(v)
+			}
+		}
+	}
+	return errors.New("Unexpected end of response")
 }
 
 func parseResponse_SHCONF_WRITE(r []string, ok *bool) error {
@@ -53,7 +138,9 @@ func parseResponse_SHCONN(r []string, ok *bool) error {
 	return parseBasicOkOrError(r, ok)
 }
 
-func parseResponse_SHBOD_READ(r []string, body *string, bodyLen *int) error { return &noImpl{} }
+func parseResponse_SHBOD_READ(r []string, body *string, bodyLen *int) error {
+	return parseBasicValuesEndingWithOK(r, "+SHBOD", body, bodyLen)
+}
 
 func parseResponse_SHBOD_WRITE(r []string, ok *bool) error {
 	return parseBasicOkOrError(r, ok)
@@ -165,30 +252,37 @@ func parseResponse_CFSWFILE_WRITE(r []string) error {
 }
 
 // ssl / tls related commands
-func parseResponse_CSSLCFG_WRITE(r []string) error { return &noImpl{} }
-func parseResponse_CSSLCFG_WRITE_ctxindex(r []string, ctxIndex *int, sslVersion *int, cipherSuite *int, ignoreRtcTime *bool, protocol *int, sni *string) error {
-	return &noImpl{}
+func parseResponse_CSSLCFG_WRITE(r []string, ok *bool) error {
+	return parseBasicOkOrError(r, ok)
 }
 
 func parseBasicOkOrError(r []string, ok *bool) error {
-	for _, line := range r {
-		if strings.Contains(line, "OK") {
-			if ok != nil {
-				*ok = true
-			}
-			return nil
-		}
-		if strings.Contains(line, "ERROR") {
-			if ok != nil {
-				*ok = false
-			}
-			return nil
-		}
+	output.Println("parsing:", r)
+	if ok != nil {
+		*ok = true
 	}
-	return errors.New("Reply did not contain OK or ERROR")
+	return nil
+	/*
+		for _, line := range r {
+			if strings.Contains(line, "OK") {
+				if ok != nil {
+					*ok = true
+				}
+				return nil
+			}
+			if strings.Contains(line, "ERROR") {
+				if ok != nil {
+					*ok = false
+				}
+				return nil
+			}
+		}
+		return errors.New("Reply did not contain OK or ERROR")
+	*/
 }
 
 func parseBasicValuesEndingWithOK(r []string, cmd string, values ...interface{}) error {
+	output.Println("parsing:", r)
 	for _, line := range r {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, cmd+":") {
@@ -226,5 +320,5 @@ func parseBasicValuesEndingWithOK(r []string, cmd string, values ...interface{})
 			return nil
 		}
 	}
-	return fmt.Errorf("Malformed response to %s", cmd)
+	return nil
 }
