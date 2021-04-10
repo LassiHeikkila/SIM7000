@@ -1,11 +1,11 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"os"
 
-	"github.com/LassiHeikkila/SIM7000/https"
-	"github.com/LassiHeikkila/SIM7000/module"
+	"github.com/LassiHeikkila/SIM7000/https_native"
 	"github.com/LassiHeikkila/SIM7000/output"
 )
 
@@ -36,24 +36,14 @@ func main() {
 		return
 	}
 
-	moduleSettings := module.Settings{
-		APN:                   *apnFlag,
-		SerialPort:            *deviceFlag,
-		MaxConnectionAttempts: 30,
-	}
-
-	m := module.NewSIM7000(moduleSettings)
-	if m == nil {
-		output.Println("Failed to create working module")
-		return
-	}
-	defer m.Close()
-
 	httpsClientSettings := https.Settings{
 		APN: moduleSettings.APN,
 	}
 
-	httpsClient := https.NewClient(m, httpsClientSettings)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	httpsClient := https.NewClient(ctx, httpsClientSettings)
 	if httpsClient == nil {
 		output.Println("Failed to create working HTTP client")
 		return

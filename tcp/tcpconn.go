@@ -1,10 +1,17 @@
+// Package tcp implements tcp communications with SIM7000 module
+// Currently limited to one TCP connection at a time, even though SIM7000 supports multiple connections.
 package tcp
 
 import (
+	"bufio"
+	"context"
 	"errors"
 	"fmt"
+	"log"
+	"io"
 	"net"
 	"strings"
+	"strconv"
 	"time"
 
 	"github.com/LassiHeikkila/SIM7000/module"
@@ -47,22 +54,36 @@ type TCPConn struct {
 
 	readDeadline  time.Time
 	writeDeadline time.Time
+
+	ctx context.Context
 }
 
 // Dial resolves the given address and opens a connection to it
 // For TCP networks, the address has the form "host:port".
 // The host must be a literal IP address, or a host name that can be resolved to IP addresses.
 // The port must be a literal port number or a service name.
-func Dial(network, address string) (net.Conn, error) {
-	switch network {
+func Dial(network, addr string) (net.Conn, error) {
+	return DialContext(context.Background(), network, addr)
+}
+
+// DialContext connects to the address on the named network using the provided context.
+// 
+// The provided Context must be non-nil. If the context expires before the connection is complete, an error is returned. Once successfully connected, any expiration of the context will not affect the connection.
+// 
+// When using TCP, and the host in the address parameter resolves to multiple network addresses, any dial timeout (from d.Timeout or ctx) is spread over each consecutive dial, such that each is given an appropriate fraction of the time to connect. For example, if a host has 4 IP addresses and the timeout is 1 minute, the connect to each single address will be given 15 seconds to complete before trying the next one.
+// 
+// See func Dial for a description of the network and address parameters
+func DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+		switch network {
 	case "tcp", "tcp4", "": // empty string defaults to tcp4
-		return dialTCP4(address)
+		return dialTCP4(ctx, addr)
 	default:
 		return nil, fmt.Errorf(`Unsupported network "%s"`, network)
 	}
 }
 
-func getModule() (module.Module, error) {
+// GetModule returns Module ready to be used in TCP mode, provided the registered settings are OK
+func GetModule() (module.Module, error) {
 	s := module.Settings{
 		APN:                   globalSettings[`APN`],
 		Username:              globalSettings[`USERNAME`],
@@ -71,6 +92,9 @@ func getModule() (module.Module, error) {
 		SerialPort:            globalSettings[`PORT`],
 		MaxConnectionAttempts: 10,
 	}
+	if _, ok := globalSettings[`DEBUG`]; ok {
+		s.TraceLogger = log.New(log.Writer(), "MODULE TRACE:", log.Lmicroseconds)
+	}
 	m := module.NewSIM7000(s)
 	if m == nil {
 		return nil, errors.New("Failed to bring up module")
@@ -78,21 +102,21 @@ func getModule() (module.Module, error) {
 	// module ready to use
 
 	// check existing DNS config
-	resp, _ := m.SendATCommandReturnResponse(`AT+CDNSCFG?`, time.Second)
+	resp, _ := m.SendATCommandReturnResponse(`+CDNSCFG?`, time.Second)
 	primary, secondary := parseDNCFGQueryResponse(resp)
 
 	// configure DNS servers if needed / wanted
 	if dns1, dns1present := globalSettings[`DNS1`]; dns1present {
 		if dns2, dns2present := globalSettings[`DNS2`]; dns2present {
 			if dns1 != primary || dns2 != secondary {
-				if gotOK, _ := m.SendATCommand(fmt.Sprintf(`AT+CDNSCFG=%s,%s`, dns1, dns2), time.Second, `OK`); !gotOK {
+				if gotOK, _ := m.SendATCommand(fmt.Sprintf(`+CDNSCFG=%s,%s`, dns1, dns2), time.Second, `OK`); !gotOK {
 					m.Close()
 					return nil, errors.New("Failed to apply DNS configuration")
 				}
 			}
 		} else {
 			if dns1 != primary {
-				if gotOK, _ := m.SendATCommand(fmt.Sprintf(`AT+CDNSCFG=%s`, dns1), time.Second, `OK`); !gotOK {
+				if gotOK, _ := m.SendATCommand(fmt.Sprintf(`+CDNSCFG=%s`, dns1), time.Second, `OK`); !gotOK {
 					m.Close()
 					return nil, errors.New("Failed to apply DNS configuration")
 				}
@@ -102,8 +126,8 @@ func getModule() (module.Module, error) {
 	return m, nil
 }
 
-func dialTCP4(address string) (*TCPConn, error) {
-	m, err := getModule()
+func dialTCP4(ctx context.Context, address string) (*TCPConn, error) {
+	m, err := GetModule()
 	if err != nil {
 		return nil, err
 	}
@@ -117,22 +141,57 @@ func dialTCP4(address string) (*TCPConn, error) {
 		// failed to parse IP --> must be domain name
 
 		// resolve address
-		resp, _ := m.SendATCommandReturnResponse(fmt.Sprintf(`AT+CDNSGIP="%s"`, address), 1*time.Second)
-		ip1, _, err := parseDNSGIPResp(resp)
-		if err != nil {
-			return nil, err
+		for {
+			resp, _ := m.SendATCommandReturnResponse(fmt.Sprintf(`+CDNSGIP="%s"`, ipOrDomain), 1*time.Second)
+			ip1, _, err, isGarbage := parseDNSGIPResp(resp)
+			if isGarbage {
+				continue
+			}
+			if err != nil {
+				fmt.Println("Failed to CDNSGIP:", ipOrDomain, err, resp)
+				return nil, err
+			}
+			ip = ip1
+			break
 		}
-		ip = ip1
 	}
 
-	_ = net.TCPAddr{
+	remoteaddr := net.TCPAddr{
 		IP:   net.ParseIP(ip),
 		Port: port,
 	}
 
-	_, _=  m.SendATCommandReturnResponse(fmt.Sprintf(`AT+CIPSTART="TCP",%s,%d`, ip, port), 2*time.Second)
+	cipstartOK := func(resp []string) (bool, bool) {
+		for _, line := range resp {
+			if strings.Contains(line, "CONNECT OK") {
+				return true, false
+			}
+			if strings.Contains(line, "ALREADY CONNECT") {
+				return true, false
+			}
+			if strings.Contains(line, "CONNECT FAIL") {
+				return false, false
+			}
+		}
+		return false, true
+	}
 
-	return nil, nil
+	for {
+		resp, _ :=  m.SendATCommandReturnResponse(fmt.Sprintf(`+CIPSTART="TCP",%s,%d`, ip, port), 2*time.Second)
+		if ok, isGarbage := cipstartOK(resp); isGarbage {
+			continue
+		} else if !ok {
+			return nil, errors.New("Unable to start tcp connection")
+		}
+		break
+	}
+	fmt.Println("Connected to", ip, port)
+
+	return &TCPConn{
+		m: m,
+		remoteAddr: remoteaddr,
+		ctx: ctx,
+	}, nil
 }
 
 func ResolveTCPAddr(network, address string) (*net.TCPAddr, error) {
@@ -153,14 +212,62 @@ func resolveTcpAddr(network, address string) (*net.TCPAddr, error) {
 
 func DialTCP(network string, laddr, raddr *net.TCPAddr) (*TCPConn, error) {
 	switch network {
-	case "tcp", "tcp4", "tcp6":
+	case "tcp", "tcp4":
 	default:
 		return nil, fmt.Errorf(`Bad network given: "%s"`, network)
 	}
 	if raddr == nil {
 		return nil, errors.New(`Missing remote address`)
 	}
-	return nil, nil
+	return dialTCP4(context.Background(), fmt.Sprintf("%s:%d", raddr.IP.String(), raddr.Port))
+}
+
+func parseBytesAvailableCIPRXGET(resp []string) (int, error) {
+	for _, line := range resp {
+		if strings.Contains(line, "+CIPRXGET:") {
+			// we are expecting this
+			// +CIPRXGET: 4,<cnflength>
+			parts := strings.Split(line, `,`)
+			if len(parts) < 2 {
+				return 0, errors.New("Bad response: " + string(line))
+			}
+			cnflength := strings.TrimSpace(parts[1])
+			cnflen, err := strconv.ParseInt(string(cnflength), 10, 64)
+			if cnflen > 2920 {
+				fmt.Println("WARNING: Module says more than 2920 bytes to be read, but max size should be 2920 according to documentation")
+			}
+			return int(cnflen), err
+		}
+	}
+	return 0, errors.New("Unable to parse response")
+}
+
+func parseTCPDataCIPRXGET(resp []string, buf []byte) error {
+	// response looks like this:
+	// +CIPRXGET: 2,<reqlength>,<cnflength>[,<IP ADDRESS>:<PORT>]
+	// 1234567890…
+	// OK
+	isStarted := false
+	isEnded := false
+	for i := 0; i < len(resp); i++ {
+		if isStarted && !isEnded {
+			buf = append(buf, []byte(resp[i] + "\n")...)
+		}
+		if isEnded {
+			break
+		}
+		line := strings.TrimSpace(resp[i])
+		if line==`OK` {
+			isEnded = true
+		} else if strings.Contains(line, `+CIPRXGET`) {
+			isStarted = true
+		}
+	}
+
+	if !isStarted || !isEnded {
+		return errors.New("Incomplete response to CIPRXGET")
+	}
+	return nil
 }
 
 // Read reads data from the connection.
@@ -168,36 +275,113 @@ func DialTCP(network string, laddr, raddr *net.TCPAddr) (*TCPConn, error) {
 // time limit; see SetDeadline and SetReadDeadline.
 //
 // Read deadline not supported yet.
-func (c *TCPConn) Read(b []byte) (n int, err error) {
-	//d := time.Until(c.readDeadline)
-	n, err = c.m.Read(b)
-	return n, err
+func (c *TCPConn) Read(b []byte) (int, error) {
+	// first ask how many unread bytes there are
+	resp, _ := c.m.SendATCommandReturnResponse(`+CIPRXGET=4,1024`, time.Second)
+	bytesAvail, err := parseBytesAvailableCIPRXGET(resp)
+	if err != nil {
+		return 0, err
+	}
+	if bytesAvail == 0 {
+		return 0, io.EOF
+	}
+
+	resp, _ = c.m.SendATCommandReturnResponse(`+CIPRXGET=2,1024`, time.Second)
+	err = parseTCPDataCIPRXGET(resp, b)
+	return len(b), err
+}
+
+func checkSendOK(m module.Module, maxLines int) bool {
+	scanner := bufio.NewScanner(m)
+	for i := 0; i < maxLines; i++ {
+		ok := scanner.Scan()
+		if !ok {
+			return false
+		}
+		resp := scanner.Text()
+		s := strings.TrimSpace(resp)
+		if s == `SEND OK` {
+			return true
+		} else if s == `SEND FAIL` {
+			return false
+		} else {
+			fmt.Println("read:", s)
+		}
+	}
+	return false
 }
 
 // Write writes data to the connection.
 // Write can be made to time out and return an error after a fixed
 // time limit; see SetDeadline and SetWriteDeadline.
 func (c *TCPConn) Write(b []byte) (n int, err error) {
-	d := time.Second
-	if !c.writeDeadline.IsZero() {
-		d = time.Until(c.writeDeadline)
+	fmt.Println("Writing: ", string(b))
+	
+	parseDataSize := func(resp []string) int {
+		// we are looking for this:
+		// +CIPSEND: <size>
+		// OK
+		var sz int64
+		for _, line := range resp {
+			if strings.Contains(line, "+CIPSEND:") {
+				line = strings.TrimSpace(line)
+				line = strings.TrimPrefix(line, "+CIPSEND:")
+				line = strings.TrimSpace(line)
+				sz, _ = strconv.ParseInt(string(line), 10, 64)
+			} else if line == "OK" {
+				return int(sz)
+			}
+		}
+		// default
+		return 1460
 	}
-	if readyToSend, _ := c.m.SendATCommand(fmt.Sprintf(`AT+CIPSEND=%d`, len(b)), d, `>`); readyToSend {
-		n, err = c.m.Write(b)
-	} else {
-		return 0, fmt.Errorf(`Module not ready to send`)
-	}
-	d = time.Second
-	if !c.writeDeadline.IsZero() {
-		d = time.Until(c.writeDeadline)
-	}
-	resp, _ := c.m.ReadATResponse(d)
-	s := strings.TrimSpace(string(resp))
-	if s != `SEND OK` {
-		return n, fmt.Errorf(`Sending failed, got module response: %s`, s)
-	}
+	// first check how many bytes we can send at once
+	resp, _ := c.m.SendATCommandReturnResponse(`+CIPSEND?`, 100*time.Millisecond)
+	fmt.Println("+CIPSEND? response:\n", resp)
+	chunkSize := parseDataSize(resp)
 
-	return n, nil
+	fmt.Printf("Writing must be done in chunks of %d bytes\n", chunkSize)
+	fmt.Printf("There are %d bytes to be written\n", len(b))
+
+	if len(b) > chunkSize {
+		var tot_n = 0
+		for i := 0; i < len(b); {
+			if rdy, _ := c.m.SendATCommand(fmt.Sprintf(`+CIPSEND=%d`, chunkSize), time.Second, `>`); rdy {
+				end := i+chunkSize
+				if end > len(b) {
+					end = len(b)
+				}
+				n, _ := c.m.Write(b[i:end])
+				tot_n += n
+				fmt.Printf("Wrote %d bytes, total %d/%d\n", n, tot_n, len(b))
+			} else {
+				fmt.Println("Module not ready to send")
+				continue
+			}
+			success := checkSendOK(c.m, 5)
+			if !success {
+				fmt.Println("SEND NOK")
+				return n, errors.New(`Sending failed`)
+			} else {
+				fmt.Println("SEND OK")
+			}
+			i += chunkSize
+		}
+		return tot_n, nil
+	} else { // whole thing fits into one chunk
+		if readyToSend, _ := c.m.SendATCommand(fmt.Sprintf(`+CIPSEND=%d`, len(b)), time.Second, `>`); readyToSend {
+			n, err = c.m.Write(b)
+			fmt.Println("Data written")
+		} else {
+			return 0, fmt.Errorf(`Module not ready to send`)
+		}
+		success := checkSendOK(c.m,5)
+		if !success {
+			fmt.Println("SEND NOK")
+			return n, errors.New(`Sending failed`)
+		}
+		return n, nil
+	}
 }
 
 // Close closes the connection.

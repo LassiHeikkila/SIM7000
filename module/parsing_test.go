@@ -2,7 +2,12 @@ package module
 
 import (
 	"testing"
+	"strings"
 )
+
+func inputAsLines(input string) []string {
+	return strings.Split(input, "\n")
+}
 
 func TestCIPSTATUSResponseParsingCIPMUX0(t *testing.T) {
 	tests := map[string]struct {
@@ -97,7 +102,7 @@ STATE: PDP DEACT`,
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			got := ParseCIPSTATUSResp([]byte(tc.input))
+			got := ParseCIPSTATUSResp(inputAsLines(tc.input))
 			if got != tc.want {
 				t.Fatalf(`Got %v, wanted %v`, got, tc.want)
 			}
@@ -226,7 +231,7 @@ C: 7,,"","","","INITIAL"`,
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			got := ParseCIPSTATUSResp([]byte(tc.input))
+			got := ParseCIPSTATUSResp(inputAsLines(tc.input))
 			if got != tc.want {
 				t.Fatalf(`Got %v, wanted %v`, got, tc.want)
 			}

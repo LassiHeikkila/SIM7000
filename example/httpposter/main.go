@@ -4,7 +4,7 @@ import (
 	"flag"
 	"os"
 
-	"github.com/LassiHeikkila/SIM7000/http"
+	"github.com/LassiHeikkila/SIM7000/http_native"
 	"github.com/LassiHeikkila/SIM7000/module"
 	"github.com/LassiHeikkila/SIM7000/output"
 )

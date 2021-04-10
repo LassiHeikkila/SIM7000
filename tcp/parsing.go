@@ -1,17 +1,14 @@
 package tcp
 
 import (
-	"bufio"
-	"bytes"
 	"errors"
 	"strconv"
 	"strings"
 )
 
-func parseDNSGIPResp(b []byte) (ip1 string, ip2 string, err error) {
-	scanner := bufio.NewScanner(strings.NewReader(string(b)))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+func parseDNSGIPResp(resp []string) (ip1 string, ip2 string, err error, isGarbage bool) {
+	for i := 0; i < len(resp); i++ {
+		line := strings.TrimSpace(resp[i])
 		if strings.HasPrefix(line, "+CDNSGIP:") {
 			line = strings.TrimPrefix(line, "+CDNSGIP:")
 			parts := strings.Split(line, ",")
@@ -22,49 +19,47 @@ func parseDNSGIPResp(b []byte) (ip1 string, ip2 string, err error) {
 				// `+GDNSGIP:0,<dns error code>`
 				switch strings.TrimSpace(parts[1]) {
 				case "8":
-					return "", "", errors.New("Module says: DNS COMMON ERROR")
+					return "", "", errors.New("Module says: DNS COMMON ERROR"), false
 				case "3":
-					return "", "", errors.New("Module says: NETWORK ERROR")
+					return "", "", errors.New("Module says: NETWORK ERROR"), false
 				default:
-					return "", "", errors.New("Module reply could not be parsed")
+					return "", "", errors.New("Module reply could not be parsed"), false
 				}
 			}
 			if strings.TrimSpace(parts[0]) == "1" {
 				// `+GDNSGIP: 1,<domain name>,<IP1>[,<IP2>]`
 				if len(parts) == 3 {
 					// contains only IP1
-					return strings.Trim(strings.TrimSpace(parts[2]), `"`), "", nil
+					return strings.Trim(strings.TrimSpace(parts[2]), `"`), "", nil, false
 				} else if len(parts) == 4 {
 					// contains IP1 and IP2
-					return strings.Trim(strings.TrimSpace(parts[2]), `"`), strings.Trim(strings.TrimSpace(parts[3]), `"`), nil
+					return strings.Trim(strings.TrimSpace(parts[2]), `"`), strings.Trim(strings.TrimSpace(parts[3]), `"`), nil, false
 				}
 			}
 		}
 	}
-	return "", "", errors.New("No IP could be parsed from reply")
+	return "", "", errors.New("No IP could be parsed from reply"), true
 }
 
-func parseDNCFGQueryResponse(resp []byte) (primary string, secondary string) {
-	lines := bytes.Split(resp, []byte("\n"))
-
-	extractIP := func(line []byte) []byte {
-		parts := bytes.Split(line, []byte(`:`))
+func parseDNCFGQueryResponse(resp []string) (primary string, secondary string) {
+	extractIP := func(line string) string {
+		parts := strings.Split(line, `:`)
 		if len(parts) != 2 {
-			return nil
+			return ""
 		}
-		return bytes.TrimSpace(parts[1])
+		return strings.TrimSpace(parts[1])
 	}
 
-	for _, line := range lines {
-		if bytes.HasPrefix(line, []byte(`PrimaryDns:`)) {
+	for _, line := range resp {
+		if strings.HasPrefix(line, `PrimaryDns:`) {
 			ip := extractIP(line)
-			if ip != nil {
-				primary = string(ip)
+			if ip != "" {
+				primary = ip
 			}
-		} else if bytes.HasPrefix(line, []byte(`SecondaryDns:`)) {
+		} else if strings.HasPrefix(line, `SecondaryDns:`) {
 			ip := extractIP(line)
-			if ip != nil {
-				secondary = string(ip)
+			if ip != "" {
+				secondary = ip
 			}
 		}
 	}

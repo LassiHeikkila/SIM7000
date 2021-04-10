@@ -1,11 +1,10 @@
 package module
 
 import (
-	"bufio"
 	"strings"
 )
 
-// CIPStatus represents module state that can be queried by AT+CIPSTATUS
+// CIPStatus represents module state that can be queried by +CIPSTATUS
 type CIPStatus int8
 
 // Possible states defined on page 152 of SIM7000 Series AT Command Manual V1.06
@@ -23,10 +22,9 @@ const (
 	IPPDPDeact
 )
 
-func ParseCIPSTATUSResp(b []byte) CIPStatus {
-	scanner := bufio.NewScanner(strings.NewReader(string(b)))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+func ParseCIPSTATUSResp(resp []string) CIPStatus {
+	for i := 0; i < len(resp); i++ {
+		line := strings.TrimSpace(resp[i])
 		if strings.HasPrefix(line, "STATE:") {
 			state := strings.TrimSpace(strings.TrimPrefix(line, "STATE:"))
 			switch state {

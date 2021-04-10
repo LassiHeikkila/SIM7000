@@ -1,20 +1,17 @@
 package module
 
 import (
+	"log"
 	"time"
 )
 
 // Module is an interface representing the SIM7000 module
 type Module interface {
-	SendATCommand(cmd string, timeout time.Duration, expectedReply string) (bool, error)
-	SendATCommandNoResponse(cmd string) error
-	SendATCommandTwoResponses(cmd string, timeout time.Duration, expectedReply1 string, expectedReply2 string) (bool, bool, error)
-	SendATCommandReturnResponse(cmd string, timeout time.Duration) ([]byte, error)
-	ReadATResponse(timeout time.Duration) ([]byte, error)
-	Write(buffer []byte) (int, error)
+	Command(cmd string) ([]string, error)
 	Read(buffer []byte) (int, error)
-	RunChatScript(script ChatScript) ([]byte, error)
-	GetIPStatus() CIPStatus 
+	Write(buffer []byte) (int, error)
+	RunChatScript(script ChatScript) ([]string, error)
+	GetIPStatus() CIPStatus
 
 	Close()
 }
@@ -30,6 +27,8 @@ type Settings struct {
 	PIN                   string
 	SerialPort            string
 	MaxConnectionAttempts int
+	TraceLogger           *log.Logger
+	ChatScript            *ChatScript
 }
 
 type ChatScript struct {

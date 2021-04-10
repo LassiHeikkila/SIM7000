@@ -1,8 +1,13 @@
 package tcp
 
 import (
+	"strings"
 	"testing"
 )
+
+func toLines(s string) []string {
+	return strings.Split(s, "\n")
+}
 
 func TestDNSGIPResponseParsing(t *testing.T) {
 	tests := map[string]struct {
@@ -47,7 +52,7 @@ func TestDNSGIPResponseParsing(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			gotIP1, gotIP2, err := parseDNSGIPResp([]byte(tc.input))
+			gotIP1, gotIP2, err, _ := parseDNSGIPResp(toLines(tc.input))
 			if gotIP1 != tc.wantIP1 {
 				t.Fatalf(`Got "%s", wanted "%s"`, gotIP1, tc.wantIP1)
 			}

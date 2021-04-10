@@ -1,10 +1,8 @@
 package module
 
 import (
-	"fmt"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/LassiHeikkila/SIM7000/output"
 )
@@ -19,13 +17,7 @@ func printf(f string, a ...interface{}) {
 
 func dumpBytes(b []byte) string {
 	builder := strings.Builder{}
-	for _, char := range b {
-		if unicode.IsPrint(rune(char)) {
-			builder.WriteRune(rune(char))
-		} else {
-			builder.WriteString(fmt.Sprintf("[0x%X]", char))
-		}
-	}
+	builder.Write(b)
 
 	return builder.String()
 }
