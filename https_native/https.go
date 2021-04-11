@@ -321,7 +321,7 @@ func (c *Client) roundTrip(req *nethttp.Request) (*nethttp.Response, error) {
 
 func (c *Client) roundTripHTTPS(req *nethttp.Request) (*nethttp.Response, error) {
 	c.modem.Command(`+CSSLCFG="sslversion",1,3`)
-	c.modem.Command(fmt.Sprintf(`+SHSSL=1,"%s",`, c.certName)) // empty certName means server cert is not verified
+	c.modem.Command(fmt.Sprintf(`+SHSSL=1,"%s"`, c.certName)) // empty certName means server cert is not verified
 
 	return c.roundTrip(req)
 }
