@@ -202,6 +202,7 @@ func (c *Client) roundTrip(req *nethttp.Request) (*nethttp.Response, error) {
 	if !ok {
 		return nil, errors.New("Failed to connect with HTTP")
 	}
+	defer c.modem.Command("+SHDISC")
 
 	r, err = c.modem.Command("+SHSTATE?")
 	if err != nil {
