@@ -1,32 +1,34 @@
 package module
 
 import (
+	"log"
 	"time"
 )
 
 // Module is an interface representing the SIM7000 module
 type Module interface {
-	SendATCommand(cmd string, timeout time.Duration, expectedReply string) (bool, error)
-	SendATCommandNoResponse(cmd string) error
-	SendATCommandTwoResponses(cmd string, timeout time.Duration, expectedReply1 string, expectedReply2 string) (bool, bool, error)
-	SendATCommandReturnResponse(cmd string, timeout time.Duration) ([]byte, error)
-	ReadATResponse(timeout time.Duration) ([]byte, error)
-	Write(buffer []byte) (int, error)
+	Command(cmd string) ([]string, error)
 	Read(buffer []byte) (int, error)
-	RunChatScript(script ChatScript) ([]byte, error)
+	Write(buffer []byte) (int, error)
+	RunChatScript(script ChatScript) ([]string, error)
+	GetIPStatus() CIPStatus
 
 	Close()
 }
 
 // Settings contains needed info for connecting the module to network,
-// i.e. what APN to use,
-// PIN for SIM card, if any,
+// i.e. what APN to use, username and password for APN,
+// PIN for SIM card, if any (not supported yet),
 // and which serial port to use for communicating with module
 type Settings struct {
 	APN                   string
+	Username              string
+	Password              string
 	PIN                   string
 	SerialPort            string
 	MaxConnectionAttempts int
+	TraceLogger           *log.Logger
+	ChatScript            *ChatScript
 }
 
 type ChatScript struct {
