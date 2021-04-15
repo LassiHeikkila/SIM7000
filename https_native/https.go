@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"log"
 	nethttp "net/http"
+	//"net/http/httputil"
 	"net/url"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/warthog618/modem/serial"
 	"github.com/warthog618/modem/trace"
 
+	"github.com/LassiHeikkila/SIM7000/moduleutils"
 	"github.com/LassiHeikkila/SIM7000/output"
 )
 
@@ -50,6 +52,9 @@ type Settings struct {
 // If working Client cannot be created, nil is returned.
 // Client implements net/http RoundTripper for HTTP and HTTPS
 func NewClient(ctx context.Context, settings Settings) *Client {
+	output.Println("Restarting modem")
+	moduleutils.Restart(settings.SerialPort)
+
 	output.Println("Initializing module...")
 
 	if settings.APN == "" {
@@ -89,6 +94,7 @@ func NewClient(ctx context.Context, settings Settings) *Client {
 		close(ready)
 	}
 	modem.AddIndication(`+CPIN: READY`, readyHandler)
+	defer modem.CancelIndication(`+CPIN: READY`)
 	output.Println("EXECUTING +CFUN=1")
 	if err := checkNoErrorAndResponseOK(modem.Command("+CFUN=1")); err != nil {
 		output.Println("CFUN=1 not ok:", err)
@@ -115,18 +121,24 @@ func NewClient(ctx context.Context, settings Settings) *Client {
 		close(appPdpChan)
 	}
 	modem.AddIndication("+APP PDP:", appPdpHandler)
+	defer modem.CancelIndication(`+APP PDP:`)
 	output.Println("EXECUTING +CNACT=1")
 	if err := checkNoErrorAndResponseOK(modem.Command("+CNACT=1")); err != nil {
 		output.Println("CNACT=1 not ok:", err)
 		return nil
 	}
+	timeout := time.NewTimer(10 * time.Second)
+	defer timeout.Stop()
 	select {
 	case <-ctx.Done():
 		output.Println("Context cancelled!")
 		return nil
-	case <-appPdpChan:
+	case <-timeout.C:
+		output.Println("Command +CNACT failed to respond in time")
+		return nil
+	case <-appPdpChan: // keep going
 	}
-	modem.CancelIndication("+APP PDP:")
+
 	if !pdpActive {
 		output.Println("APP PDP not active")
 		return nil
@@ -182,6 +194,8 @@ func (c *Client) RoundTrip(req *nethttp.Request) (*nethttp.Response, error) {
 }
 
 func (c *Client) roundTrip(req *nethttp.Request) (*nethttp.Response, error) {
+	//d, _ := httputil.DumpRequest(req, true)
+	//output.Println("Request:\n", string(d))
 	u := fmt.Sprintf("%s://%s", req.URL.Scheme, req.URL.Host)
 	if err := c.configure("URL", u); err != nil {
 		return nil, err
@@ -249,25 +263,34 @@ func (c *Client) roundTrip(req *nethttp.Request) (*nethttp.Response, error) {
 	var shreqErr error
 	respChan := make(chan struct{})
 	handleSHREQ := func(r []string) {
+		output.Println("handleSHREQ called")
 		var t string
 		shreqErr = parseResponse_SHREQ_UNSOLICITED_RESPONSE(r, &t, &status, &dataLen)
 		close(respChan)
 	}
 
-	c.modem.AddIndication("+SHREQ:", handleSHREQ)
+	err = c.modem.AddIndication("+SHREQ:", handleSHREQ)
+	defer c.modem.CancelIndication("+SHREQ:")
+	if err != nil {
+		output.Println("error registering handler for SHREQ:", err)
+	}
 
 	err = c.executeRequest(req.Method, *req.URL)
 	if err != nil {
 		return nil, err
 	}
 
+	timeout := time.NewTimer(10 * time.Second)
+	defer timeout.Stop()
+
 	select {
+	case <-timeout.C:
+		shreqErr = errors.New("No response")
 	case <-respChan:
 	case <-req.Context().Done():
 		return nil, errors.New("Context done")
 	}
 
-	c.modem.CancelIndication("+SHREQ:")
 	if shreqErr != nil {
 		return nil, err
 	}
@@ -275,26 +298,28 @@ func (c *Client) roundTrip(req *nethttp.Request) (*nethttp.Response, error) {
 	dataRead := 0
 	responseData := ""
 	allReadChan := make(chan struct{})
-
-	readIndicationHandler := func(r []string) {
-		var length int
-		var data string
-		parseResponse_SHREAD_UNSOLICITED_RESPONSE(r, &data, &length)
-		dataRead += length
-		responseData += data
-
-		if dataRead >= dataLen {
-			close(allReadChan)
-		}
-	}
-
-	c.modem.AddIndication("+SHREAD:", readIndicationHandler)
-
 	if dataLen > 0 {
+		readIndicationHandler := func(r []string) {
+			var length int
+			var data string
+			parseResponse_SHREAD_UNSOLICITED_RESPONSE(r, &data, &length)
+			dataRead += length
+			responseData += data
+
+			if dataRead >= dataLen {
+				close(allReadChan)
+			}
+		}
+
+		c.modem.AddIndication("+SHREAD:", readIndicationHandler)
+		defer c.modem.CancelIndication("+SHREAD:")
+
 		_, err := c.modem.Command(fmt.Sprintf(`+SHREAD=0,%d`, dataLen))
 		if err != nil {
 			return nil, err
 		}
+	} else {
+		close(allReadChan)
 	}
 	select {
 	case <-allReadChan:
@@ -302,8 +327,13 @@ func (c *Client) roundTrip(req *nethttp.Request) (*nethttp.Response, error) {
 		return nil, errors.New("Context done")
 	}
 
-	respReader := strings.NewReader(responseData)
-	respReadCloser := ioutil.NopCloser(respReader)
+	var respReadCloser io.ReadCloser
+	if len(responseData) > 0 {
+		respReader := strings.NewReader(responseData)
+		respReadCloser = ioutil.NopCloser(respReader)
+	} else {
+		respReadCloser = nil
+	}
 
 	resp := &nethttp.Response{
 		Status:        fmt.Sprintf("%d %s", status, nethttp.StatusText(status)),
@@ -444,6 +474,7 @@ func (c *Client) uploadCert(certPath string) error {
 		close(downloadDone)
 	}
 	c.modem.AddIndication("DOWNLOAD", downloadHandler)
+	defer c.modem.CancelIndication("DOWNLOAD")
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeoutMs*time.Millisecond)
 	defer cancel()

@@ -6,8 +6,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-
-	"github.com/LassiHeikkila/SIM7000/output"
+	//"github.com/LassiHeikkila/SIM7000/output"
 )
 
 /* what AT commands are needed for HTTPS application?
@@ -257,7 +256,7 @@ func parseResponse_CSSLCFG_WRITE(r []string, ok *bool) error {
 }
 
 func parseBasicOkOrError(r []string, ok *bool) error {
-	output.Println("parsing:", r)
+	//output.Println("parsing:", r)
 	if ok != nil {
 		*ok = true
 	}
@@ -282,7 +281,7 @@ func parseBasicOkOrError(r []string, ok *bool) error {
 }
 
 func parseBasicValuesEndingWithOK(r []string, cmd string, values ...interface{}) error {
-	output.Println("parsing:", r)
+	//output.Println("parsing:", r)
 	for _, line := range r {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, cmd+":") {
