@@ -273,6 +273,7 @@ func (c *Client) roundTrip(req *nethttp.Request) (*nethttp.Response, error) {
 	defer c.modem.CancelIndication("+SHREQ:")
 	if err != nil {
 		output.Println("error registering handler for SHREQ:", err)
+		return nil, err
 	}
 
 	err = c.executeRequest(req.Method, *req.URL)
@@ -285,14 +286,14 @@ func (c *Client) roundTrip(req *nethttp.Request) (*nethttp.Response, error) {
 
 	select {
 	case <-timeout.C:
-		shreqErr = errors.New("No response")
+		shreqErr = errors.New("no response")
 	case <-respChan:
 	case <-req.Context().Done():
-		return nil, errors.New("Context done")
+		return nil, errors.New("context done")
 	}
 
 	if shreqErr != nil {
-		return nil, err
+		return nil, shreqErr
 	}
 
 	dataRead := 0
@@ -311,7 +312,11 @@ func (c *Client) roundTrip(req *nethttp.Request) (*nethttp.Response, error) {
 			}
 		}
 
-		c.modem.AddIndication("+SHREAD:", readIndicationHandler)
+		err = c.modem.AddIndication("+SHREAD:", readIndicationHandler)
+		if err != nil {
+			log.Println("error registering read indication handler:", err)
+			return nil, err
+		}
 		defer c.modem.CancelIndication("+SHREAD:")
 
 		_, err := c.modem.Command(fmt.Sprintf(`+SHREAD=0,%d`, dataLen))
@@ -324,7 +329,7 @@ func (c *Client) roundTrip(req *nethttp.Request) (*nethttp.Response, error) {
 	select {
 	case <-allReadChan:
 	case <-req.Context().Done():
-		return nil, errors.New("Context done")
+		return nil, errors.New("context done")
 	}
 
 	var respReadCloser io.ReadCloser
