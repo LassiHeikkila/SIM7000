@@ -28,6 +28,9 @@ type Client struct {
 	port     io.ReadWriter
 	mutex    sync.Mutex
 	certName string
+
+	responseTimeoutDuration time.Duration
+	delayBetweenCmds        time.Duration
 }
 
 // Settings is a struct used to configure the Client.
@@ -46,14 +49,24 @@ type Settings struct {
 	ProxyIP   string
 	ProxyPort int
 	CertPath  string
+
+	ResponseTimeoutDuration time.Duration
+	DelayBetweenCommands    time.Duration
 }
+
+// DefaultResponseTimeoutDuration is how long to wait for a response from server, by default, after sending a request
+const DefaultResponseTimeoutDuration = 20 * time.Second
 
 // NewClient returns a ready to use Client, given working Settings.
 // If working Client cannot be created, nil is returned.
 // Client implements net/http RoundTripper for HTTP and HTTPS
 func NewClient(ctx context.Context, settings Settings) *Client {
 	output.Println("Restarting modem")
-	moduleutils.Restart(settings.SerialPort)
+	err := moduleutils.Restart(settings.SerialPort)
+	if err != nil {
+		output.Println("Failed to restart modem")
+		return nil
+	}
 
 	output.Println("Initializing module...")
 
@@ -89,11 +102,20 @@ func NewClient(ctx context.Context, settings Settings) *Client {
 		return nil
 	}
 
+	if err := checkNoErrorAndResponseOK(modem.Command(`+CNMP=38`)); err != nil {
+		output.Println("Setting module to LTE only mode failed:", err)
+		return nil
+	}
+
 	ready := make(chan struct{})
 	readyHandler := func([]string) {
 		close(ready)
 	}
-	modem.AddIndication(`+CPIN: READY`, readyHandler)
+	err = modem.AddIndication(`+CPIN: READY`, readyHandler)
+	if err != nil {
+		output.Println("Failed to add indication for +CPIN: READY")
+		return nil
+	}
 	defer modem.CancelIndication(`+CPIN: READY`)
 	output.Println("EXECUTING +CFUN=1")
 	if err := checkNoErrorAndResponseOK(modem.Command("+CFUN=1")); err != nil {
@@ -120,7 +142,11 @@ func NewClient(ctx context.Context, settings Settings) *Client {
 		}
 		close(appPdpChan)
 	}
-	modem.AddIndication("+APP PDP:", appPdpHandler)
+	err = modem.AddIndication("+APP PDP:", appPdpHandler)
+	if err != nil {
+		output.Println("Failed to add indication for +APP PDP:")
+		return nil
+	}
 	defer modem.CancelIndication(`+APP PDP:`)
 	output.Println("EXECUTING +CNACT=1")
 	if err := checkNoErrorAndResponseOK(modem.Command("+CNACT=1")); err != nil {
@@ -148,10 +174,15 @@ func NewClient(ctx context.Context, settings Settings) *Client {
 		output.Println("CNACT not ok:", err)
 		return nil
 	}
-
+	respTimeout := DefaultResponseTimeoutDuration
+	if settings.ResponseTimeoutDuration != 0 {
+		respTimeout = settings.ResponseTimeoutDuration
+	}
 	c := &Client{
-		modem: modem,
-		port:  mio,
+		modem:                   modem,
+		port:                    mio,
+		responseTimeoutDuration: respTimeout,
+		delayBetweenCmds:        settings.DelayBetweenCommands,
 	}
 	if settings.CertPath != "" {
 		err := c.uploadCert(settings.CertPath)
@@ -181,6 +212,12 @@ func (c *Client) Close() {
 	output.Println("HTTP service terminated with success")
 }
 
+func (c *Client) wait() {
+	if c.delayBetweenCmds != 0 {
+		time.Sleep(c.delayBetweenCmds)
+	}
+}
+
 // RoundTrip executes a http request and returns the response
 func (c *Client) RoundTrip(req *nethttp.Request) (*nethttp.Response, error) {
 	switch req.URL.Scheme {
@@ -200,43 +237,49 @@ func (c *Client) roundTrip(req *nethttp.Request) (*nethttp.Response, error) {
 	if err := c.configure("URL", u); err != nil {
 		return nil, err
 	}
+	c.wait()
 	if err := c.configure("BODYLEN", 1024); err != nil {
 		return nil, err
 	}
+	c.wait()
 	if err := c.configure("HEADERLEN", 350); err != nil {
 		return nil, err
 	}
+	c.wait()
 
 	r, err := c.modem.Command("+SHCONN")
 	if err != nil {
 		return nil, err
 	}
 	ok := false
-	parseResponse_SHCONN(r, &ok)
+	_ = parseResponse_SHCONN(r, &ok)
 	if !ok {
 		return nil, errors.New("Failed to connect with HTTP")
 	}
 	defer c.modem.Command("+SHDISC")
+	time.Sleep(time.Second)
 
 	r, err = c.modem.Command("+SHSTATE?")
 	if err != nil {
-		return nil, err
+		return nil, errors.New("+SHSTATE? returned: " + err.Error())
 	}
 	state := -1
-	parseResponse_SHSTATE_READ(r, &state)
+	_ = parseResponse_SHSTATE_READ(r, &state)
 	if state != 1 {
 		return nil, errors.New("HTTP connection status is not \"connected\"")
 	}
+	c.wait()
 
 	r, err = c.modem.Command("+SHCHEAD")
 	if err != nil {
 		return nil, err
 	}
 	ok = false
-	parseResponse_SHCHEAD(r, &ok)
+	_ = parseResponse_SHCHEAD(r, &ok)
 	if !ok {
 		return nil, errors.New("Failed to clear head")
 	}
+	c.wait()
 
 	for key, values := range req.Header {
 		v := strings.Join(values, ",")
@@ -244,6 +287,7 @@ func (c *Client) roundTrip(req *nethttp.Request) (*nethttp.Response, error) {
 		if err != nil {
 			return nil, err
 		}
+		c.wait()
 	}
 
 	if req.Body != nil {
@@ -256,6 +300,7 @@ func (c *Client) roundTrip(req *nethttp.Request) (*nethttp.Response, error) {
 		if err != nil {
 			return nil, err
 		}
+		c.wait()
 	}
 
 	var status int
@@ -266,6 +311,7 @@ func (c *Client) roundTrip(req *nethttp.Request) (*nethttp.Response, error) {
 		output.Println("handleSHREQ called")
 		var t string
 		shreqErr = parseResponse_SHREQ_UNSOLICITED_RESPONSE(r, &t, &status, &dataLen)
+		log.Println("unsolicited shreq parsed, status", status)
 		close(respChan)
 	}
 
@@ -275,13 +321,15 @@ func (c *Client) roundTrip(req *nethttp.Request) (*nethttp.Response, error) {
 		output.Println("error registering handler for SHREQ:", err)
 		return nil, err
 	}
+	c.wait()
 
 	err = c.executeRequest(req.Method, *req.URL)
 	if err != nil {
 		return nil, err
 	}
+	c.wait()
 
-	timeout := time.NewTimer(10 * time.Second)
+	timeout := time.NewTimer(c.responseTimeoutDuration)
 	defer timeout.Stop()
 
 	select {
@@ -323,6 +371,7 @@ func (c *Client) roundTrip(req *nethttp.Request) (*nethttp.Response, error) {
 		if err != nil {
 			return nil, err
 		}
+		c.wait()
 	} else {
 		close(allReadChan)
 	}
@@ -355,19 +404,26 @@ func (c *Client) roundTrip(req *nethttp.Request) (*nethttp.Response, error) {
 }
 
 func (c *Client) roundTripHTTPS(req *nethttp.Request) (*nethttp.Response, error) {
-	c.modem.Command(`+CSSLCFG="sslversion",1,3`)
-	c.modem.Command(fmt.Sprintf(`+SHSSL=1,"%s"`, c.certName)) // empty certName means server cert is not verified
+	if err := checkNoErrorAndResponseOK(c.modem.Command(`+CSSLCFG="sslversion",1,3`)); err != nil {
+		return nil, err
+	}
+	c.wait()
+	// empty certName means server cert is not verified
+	if err := checkNoErrorAndResponseOK(c.modem.Command(fmt.Sprintf(`+SHSSL=1,"%s"`, c.certName))); err != nil {
+		return nil, err
+	}
+	c.wait()
 
 	return c.roundTrip(req)
 }
 
 func (c *Client) configure(key string, value interface{}) error {
-	switch value.(type) {
+	switch value := value.(type) {
 	case int:
-		_, err := c.modem.Command(fmt.Sprintf(`+SHCONF="%s",%d`, key, value.(int)))
+		_, err := c.modem.Command(fmt.Sprintf(`+SHCONF="%s",%d`, key, value))
 		return err
 	case string:
-		_, err := c.modem.Command(fmt.Sprintf(`+SHCONF="%s","%s"`, key, value.(string)))
+		_, err := c.modem.Command(fmt.Sprintf(`+SHCONF="%s","%s"`, key, value))
 		return err
 	default:
 		return errors.New("Unhandled value type")
@@ -378,10 +434,10 @@ func (c *Client) setHeader(key, value string) error {
 	var r []string
 	var err error
 	if r, err = c.modem.Command(fmt.Sprintf(`+SHAHEAD="%s","%s"`, key, value)); err != nil {
-		return err
+		return errors.New("+SHAHEAD returned ERROR")
 	}
 	ok := false
-	parseResponse_SHAHEAD_WRITE(r, &ok)
+	_ = parseResponse_SHAHEAD_WRITE(r, &ok)
 	if !ok {
 		return fmt.Errorf(`Failed to set header "%s" to "%s"`, key, value)
 	}
@@ -392,10 +448,10 @@ func (c *Client) setParameter(key, value string) error {
 	var r []string
 	var err error
 	if r, err = c.modem.Command(fmt.Sprintf(`+SHPARA="%s","%s"`, key, value)); err != nil {
-		return err
+		return errors.New("+SHPARA returned ERROR")
 	}
 	ok := false
-	parseResponse_SHPARA_WRITE(r, &ok)
+	_ = parseResponse_SHPARA_WRITE(r, &ok)
 	if !ok {
 		return fmt.Errorf(`Failed to set parameter "%s" to "%s"`, key, value)
 	}
@@ -409,7 +465,7 @@ func (c *Client) setBody(body string) error {
 		return err
 	}
 	ok := false
-	parseResponse_SHBOD_WRITE(r, &ok)
+	_ = parseResponse_SHBOD_WRITE(r, &ok)
 	if !ok {
 		return fmt.Errorf(`Failed to set body to "%s"`, body)
 	}
