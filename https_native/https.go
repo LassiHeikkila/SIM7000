@@ -62,7 +62,11 @@ const DefaultResponseTimeoutDuration = 20 * time.Second
 // Client implements net/http RoundTripper for HTTP and HTTPS
 func NewClient(ctx context.Context, settings Settings) *Client {
 	output.Println("Restarting modem")
-	_ = moduleutils.Restart(settings.SerialPort)
+	err := moduleutils.Restart(settings.SerialPort)
+	if err != nil {
+		output.Println("Failed to restart modem")
+		return nil
+	}
 
 	output.Println("Initializing module...")
 
@@ -95,6 +99,11 @@ func NewClient(ctx context.Context, settings Settings) *Client {
 	time.Sleep(5 * time.Second)
 	if err := checkNoErrorAndResponseOK(modem.Command(fmt.Sprintf(`+CGDCONT=1,"IP","%s"`, settings.APN))); err != nil {
 		output.Println("Setting APN not ok:", err)
+		return nil
+	}
+
+	if err := checkNoErrorAndResponseOK(modem.Command(`+CNMP=38`)); err != nil {
+		output.Println("Setting module to LTE only mode failed:", err)
 		return nil
 	}
 
@@ -248,11 +257,11 @@ func (c *Client) roundTrip(req *nethttp.Request) (*nethttp.Response, error) {
 		return nil, errors.New("Failed to connect with HTTP")
 	}
 	defer c.modem.Command("+SHDISC")
-	c.wait()
+	time.Sleep(time.Second)
 
 	r, err = c.modem.Command("+SHSTATE?")
 	if err != nil {
-		return nil, err
+		return nil, errors.New("+SHSTATE? returned: " + err.Error())
 	}
 	state := -1
 	_ = parseResponse_SHSTATE_READ(r, &state)
@@ -425,7 +434,7 @@ func (c *Client) setHeader(key, value string) error {
 	var r []string
 	var err error
 	if r, err = c.modem.Command(fmt.Sprintf(`+SHAHEAD="%s","%s"`, key, value)); err != nil {
-		return err
+		return errors.New("+SHAHEAD returned ERROR")
 	}
 	ok := false
 	_ = parseResponse_SHAHEAD_WRITE(r, &ok)
@@ -439,7 +448,7 @@ func (c *Client) setParameter(key, value string) error {
 	var r []string
 	var err error
 	if r, err = c.modem.Command(fmt.Sprintf(`+SHPARA="%s","%s"`, key, value)); err != nil {
-		return err
+		return errors.New("+SHPARA returned ERROR")
 	}
 	ok := false
 	_ = parseResponse_SHPARA_WRITE(r, &ok)
